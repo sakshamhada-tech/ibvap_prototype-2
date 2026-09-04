@@ -1,0 +1,11 @@
+# Core video analytics stack
+ultralytics>=8.2.0        # YOLOv8 detection + built-in ByteTrack tracking
+opencv-python>=4.9.0,<5.0.0 # video I/O, drawing, Haar cascades
+numpy>=1.26.0
+
+# Web dashboard
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# Optional (only needed if you enable ANPR in config.py)
+easyocr>=1.7.1

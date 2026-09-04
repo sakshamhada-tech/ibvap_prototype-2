@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IBVAP — Border Surveillance Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="console">
+
+  <header class="console__header">
+    <div class="header__title">
+      <span class="title-mark">IBVAP</span>
+      <span class="divider"></span>
+      <span class="title-sub">Border Out Post 04, Sector 7</span>
+    </div>
+    <div class="header__status">
+      <span id="mode-badge" class="badge">day</span>
+      <span class="divider"></span>
+      <span class="status-dot" id="conn-dot"></span>
+      <span id="conn-label" class="mono">connecting</span>
+      <span class="divider"></span>
+      <span id="clock" class="mono"></span>
+    </div>
+  </header>
+
+  <main class="console__body">
+
+    <section class="panel panel--video">
+      <div class="panel__label">
+        <span>Live feed</span>
+        <span id="frame-counter" class="mono muted">frame 0</span>
+      </div>
+      <div class="video-frame">
+        <img id="video" src="/stream" alt="Live annotated surveillance feed">
+        <div class="reticle reticle--tl"></div>
+        <div class="reticle reticle--tr"></div>
+        <div class="reticle reticle--bl"></div>
+        <div class="reticle reticle--br"></div>
+      </div>
+    </section>
+
+    <section class="panel panel--log">
+      <div class="panel__label">
+        <span>Alert log</span>
+        <span id="alert-count" class="mono muted">0 total</span>
+      </div>
+      <ul id="alert-log" class="alert-log">
+        <li class="alert-empty">No alerts yet. Watching the feed.</li>
+      </ul>
+    </section>
+
+  </main>
+
+  <footer class="console__stats">
+    <div class="stat">
+      <span class="stat__value mono" id="stat-people">0</span>
+      <span class="stat__label">People tracked</span>
+    </div>
+    <div class="stat">
+      <span class="stat__value mono" id="stat-vehicles">0</span>
+      <span class="stat__label">Vehicles tracked</span>
+    </div>
+    <div class="stat">
+      <span class="stat__value mono" id="stat-alerts">0</span>
+      <span class="stat__label">Alerts logged</span>
+    </div>
+    <div class="stat">
+      <span class="stat__value mono" id="stat-uptime">00:00:00</span>
+      <span class="stat__label">Uptime</span>
+    </div>
+    <div class="stat">
+      <span class="stat__value mono" id="stat-fps">0.0</span>
+      <span class="stat__label">Processing fps</span>
+    </div>
+  </footer>
+
+</div>
+
+<script src="/static/script.js"></script>
+</body>
+</html>
