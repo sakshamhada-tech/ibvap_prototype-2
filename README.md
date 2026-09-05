@@ -130,6 +130,7 @@ Common analytics settings:
 | `IBVAP_VIDEO_SOURCE` | `0` | Camera index, file path, RTSP(S), or HTTP(S) URL |
 | `IBVAP_CONFIDENCE_THRESHOLD` | `0.4` | YOLO confidence cutoff |
 | `IBVAP_VIRTUAL_FENCE` | `50,400,1200,400` | Fence endpoints in source pixels |
+| `IBVAP_VIRTUAL_FENCE_CONTACT_MARGIN_PX` | `2` | Contact allowance around the visible fence |
 | `IBVAP_LOITERING_SECONDS` | `15` | Continuous dwell duration |
 | `IBVAP_LOITERING_MOVEMENT_THRESHOLD_PX` | `60` | Maximum window spread |
 | `IBVAP_TRACK_MAX_OBSERVATION_GAP_SECONDS` | `1.5` | Gap that resets loitering history |
@@ -138,6 +139,11 @@ Common analytics settings:
 | `IBVAP_FACE_DETECTION_INTERVAL_FRAMES` | `5` | Face-processing cadence |
 | `IBVAP_ENABLE_ANPR` | `false` | Enable optional plate OCR |
 | `IBVAP_ANPR_INTERVAL_FRAMES` | `15` | Plate/OCR processing cadence |
+
+A virtual-fence intrusion starts when a tracked object's visible bounding box
+first contacts the fence (including the small configurable margin). Centroid
+motion is also checked so fast movement that skips over the line between frames
+is not missed.
 
 Relative file and output paths resolve from the repository directory, not the
 process's current directory. Camera URLs are never stored in source code; pass

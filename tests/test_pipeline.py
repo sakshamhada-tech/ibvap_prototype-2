@@ -35,15 +35,17 @@ class FakeDetector:
     def __init__(self):
         self.face_calls = 0
         self.reset_calls = 0
+        self.bbox = (0, 0, 20, 20)
 
     def track_frame(self, _frame):
+        x1, y1, x2, y2 = self.bbox
         return [
             {
                 "track_id": 1,
                 "class_id": 0,
                 "class_name": "person",
-                "bbox": (0, 0, 20, 20),
-                "centroid": (10, 10),
+                "bbox": self.bbox,
+                "centroid": ((x1 + x2) / 2, (y1 + y2) / 2),
                 "conf": 0.9,
             }
         ]
@@ -88,6 +90,25 @@ def test_pipeline_uses_source_time_and_persists_active_loitering(monkeypatch, tm
     assert loitering[0]["source_time_seconds"] == 2.0
     assert video_pipeline.loiter_detector.update(1, (10, 10), 3.5).active
     assert video_pipeline.detector.face_calls == 1
+    video_pipeline.close()
+
+
+def test_pipeline_flags_person_box_contact_before_centroid_crosses(monkeypatch, tmp_path):
+    configure_pipeline(monkeypatch, tmp_path)
+    alerts = []
+    video_pipeline = pipeline.VideoPipeline(on_alert=alerts.append, show_overlays=False)
+    frame = FakeFrame()
+
+    video_pipeline.process_frame(frame, source_time=0)
+    video_pipeline.detector.bbox = (0, 0, 20, 50)
+    video_pipeline.process_frame(frame, source_time=1)
+    video_pipeline.process_frame(frame, source_time=2)
+
+    intrusions = [alert for alert in alerts if alert["alert_type"] == "VIRTUAL_FENCE_INTRUSION"]
+    assert len(intrusions) == 1
+    assert intrusions[0]["source_time_seconds"] == 1.0
+    assert video_pipeline.detector.bbox[3] == 50
+    assert (video_pipeline.detector.bbox[1] + video_pipeline.detector.bbox[3]) / 2 < 50
     video_pipeline.close()
 
 

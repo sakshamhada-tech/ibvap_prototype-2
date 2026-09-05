@@ -11,6 +11,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 Point = tuple[float, float]
+Box = tuple[float, float, float, float]
 _EPSILON = 1e-9
 
 
@@ -47,38 +48,111 @@ def segments_intersect(p1: Point, p2: Point, p3: Point, p4: Point) -> bool:
     )
 
 
-class VirtualFence:
-    """Detect movement segments that intersect a configured fence segment."""
+def segment_intersects_box(
+    start: Point,
+    end: Point,
+    box: Box,
+    margin_pixels: float = 0.0,
+) -> bool:
+    """Return whether a segment touches an axis-aligned box, including its margin."""
+    raw_x1, raw_y1, raw_x2, raw_y2 = box
+    left = min(raw_x1, raw_x2) - margin_pixels
+    right = max(raw_x1, raw_x2) + margin_pixels
+    top = min(raw_y1, raw_y2) - margin_pixels
+    bottom = max(raw_y1, raw_y2) + margin_pixels
 
-    def __init__(self, line: tuple[Point, Point], stale_after_seconds: float = 3.0):
+    def inside(point: Point) -> bool:
+        return (
+            left - _EPSILON <= point[0] <= right + _EPSILON
+            and top - _EPSILON <= point[1] <= bottom + _EPSILON
+        )
+
+    if inside(start) or inside(end):
+        return True
+    top_left = (left, top)
+    top_right = (right, top)
+    bottom_right = (right, bottom)
+    bottom_left = (left, bottom)
+    return any(
+        segments_intersect(start, end, edge_start, edge_end)
+        for edge_start, edge_end in (
+            (top_left, top_right),
+            (top_right, bottom_right),
+            (bottom_right, bottom_left),
+            (bottom_left, top_left),
+        )
+    )
+
+
+class VirtualFence:
+    """Detect tracked boxes contacting a fence and points moving across it."""
+
+    def __init__(
+        self,
+        line: tuple[Point, Point],
+        stale_after_seconds: float = 3.0,
+        contact_margin_pixels: float = 0.0,
+    ):
         self.line_p1, self.line_p2 = line
         self.stale_after_seconds = stale_after_seconds
-        self._last_observation: dict[int, tuple[Point, float]] = {}
+        self.contact_margin_pixels = contact_margin_pixels
+        self._last_observation: dict[int, tuple[Point, float, bool]] = {}
 
-    def check_crossing(self, track_id: int, centroid: Point, timestamp: float) -> bool:
-        crossed = False
+    def check_crossing(
+        self,
+        track_id: int,
+        centroid: Point,
+        timestamp: float,
+        bounds: Box | None = None,
+    ) -> bool:
+        """Return true once when a tracked box contacts or moves across the fence.
+
+        Bounding-box contact matches the visible overlays and catches a person
+        whose feet or body reach the line before their centroid does. Centroid
+        movement remains a fallback when fast motion skips over the line between
+        frames. A contact episode is emitted only once, including when tracking
+        first becomes available while the object is already on the fence.
+        """
+        touching = bounds is not None and segment_intersects_box(
+            self.line_p1,
+            self.line_p2,
+            bounds,
+            self.contact_margin_pixels,
+        )
+        crossed = bool(touching and track_id not in self._last_observation)
         previous = self._last_observation.get(track_id)
         if previous is not None:
-            previous_centroid, previous_timestamp = previous
+            previous_centroid, previous_timestamp, previously_touching = previous
             gap = timestamp - previous_timestamp
-            if 0 <= gap <= self.stale_after_seconds and previous_centroid != centroid:
-                previous_side = _orientation(self.line_p1, self.line_p2, previous_centroid)
-                current_side = _orientation(self.line_p1, self.line_p2, centroid)
-                previous_on_fence = _on_segment(self.line_p1, self.line_p2, previous_centroid)
-                current_on_fence = _on_segment(self.line_p1, self.line_p2, centroid)
-                changed_side = previous_side * current_side < -_EPSILON
-                arrived_on_fence = current_on_fence and not previous_on_fence
-                crossed = segments_intersect(
-                    previous_centroid, centroid, self.line_p1, self.line_p2
-                ) and (changed_side or arrived_on_fence)
-        self._last_observation[track_id] = (centroid, timestamp)
+            if 0 <= gap <= self.stale_after_seconds:
+                entered_contact = touching and not previously_touching
+                movement_crossed = False
+                if not touching and not previously_touching and previous_centroid != centroid:
+                    previous_side = _orientation(self.line_p1, self.line_p2, previous_centroid)
+                    current_side = _orientation(self.line_p1, self.line_p2, centroid)
+                    previous_on_fence = _on_segment(self.line_p1, self.line_p2, previous_centroid)
+                    current_on_fence = _on_segment(self.line_p1, self.line_p2, centroid)
+                    changed_side = previous_side * current_side < -_EPSILON
+                    arrived_on_fence = current_on_fence and not previous_on_fence
+                    movement_crossed = segments_intersect(
+                        previous_centroid,
+                        centroid,
+                        self.line_p1,
+                        self.line_p2,
+                    ) and (changed_side or arrived_on_fence)
+                crossed = entered_contact or movement_crossed
+            else:
+                # Treat an observation after a discontinuity as a new track
+                # for contact purposes, but never infer motion across the gap.
+                crossed = touching
+        self._last_observation[track_id] = (centroid, timestamp, touching)
         return crossed
 
     def expire(self, timestamp: float) -> None:
         cutoff = timestamp - self.stale_after_seconds
         stale_ids = [
             track_id
-            for track_id, (_, last_seen) in self._last_observation.items()
+            for track_id, (_, last_seen, _) in self._last_observation.items()
             if last_seen < cutoff or last_seen > timestamp
         ]
         for track_id in stale_ids:

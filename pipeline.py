@@ -121,7 +121,9 @@ class VideoPipeline:
     def __init__(self, on_alert=None, show_overlays: bool = True):
         self.detector = Detector()
         self.fence = VirtualFence(
-            config.VIRTUAL_FENCE_LINE, stale_after_seconds=config.TRACK_STALE_SECONDS
+            config.VIRTUAL_FENCE_LINE,
+            stale_after_seconds=config.TRACK_STALE_SECONDS,
+            contact_margin_pixels=config.VIRTUAL_FENCE_CONTACT_MARGIN_PX,
         )
         self.loiter_detector = LoiteringDetector(
             config.LOITERING_SECONDS,
@@ -196,7 +198,12 @@ class VideoPipeline:
             loitering = LoiteringState(active=False, started=False)
 
             if track_id is not None:
-                if self.fence.check_crossing(track_id, detection["centroid"], timestamp):
+                if self.fence.check_crossing(
+                    track_id,
+                    detection["centroid"],
+                    timestamp,
+                    bounds=detection["bbox"],
+                ):
                     night_tag = " (night)" if is_night else ""
                     if self.alert_logger.log(
                         "VIRTUAL_FENCE_INTRUSION",

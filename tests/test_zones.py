@@ -1,6 +1,11 @@
 import pytest
 
-from utils.zones import LoiteringDetector, VirtualFence, segments_intersect
+from utils.zones import (
+    LoiteringDetector,
+    VirtualFence,
+    segment_intersects_box,
+    segments_intersect,
+)
 
 
 @pytest.mark.parametrize(
@@ -15,6 +20,26 @@ from utils.zones import LoiteringDetector, VirtualFence, segments_intersect
 )
 def test_segment_intersection_includes_boundaries(movement, fence, expected):
     assert segments_intersect(*movement, *fence) is expected
+
+
+def test_segment_box_contact_includes_configured_visual_margin():
+    assert segment_intersects_box((0, 10), (20, 10), (5, 0, 15, 10))
+    assert not segment_intersects_box((0, 10), (20, 10), (5, 0, 15, 7))
+    assert segment_intersects_box((0, 10), (20, 10), (5, 0, 15, 7), margin_pixels=3)
+    assert not segment_intersects_box((0, 10), (20, 10), (30, 0, 40, 20))
+
+
+def test_virtual_fence_box_contact_fires_once_and_rearms_after_leaving():
+    fence = VirtualFence(((0, 10), (20, 10)), contact_margin_pixels=2)
+    assert not fence.check_crossing(1, (10, 2), 0, bounds=(5, 0, 15, 4))
+    assert fence.check_crossing(1, (10, 4), 1, bounds=(5, 0, 15, 8))
+    assert not fence.check_crossing(1, (10, 5), 2, bounds=(5, 0, 15, 10))
+    assert not fence.check_crossing(1, (10, 15), 3, bounds=(5, 13, 15, 18))
+    assert fence.check_crossing(1, (10, 8), 4, bounds=(5, 6, 15, 10))
+
+    first_seen_on_fence = VirtualFence(((0, 10), (20, 10)))
+    assert first_seen_on_fence.check_crossing(2, (10, 10), 0, bounds=(5, 5, 15, 15))
+    assert not first_seen_on_fence.check_crossing(2, (10, 10), 1, bounds=(5, 5, 15, 15))
 
 
 def test_virtual_fence_ignores_crossing_after_observation_gap():

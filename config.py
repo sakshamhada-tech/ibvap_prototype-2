@@ -98,6 +98,9 @@ VEHICLE_CLASS_IDS = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
 # Analytics
 VIRTUAL_FENCE_LINE = _parse_fence(os.getenv("IBVAP_VIRTUAL_FENCE", "50,400,1200,400"))
+VIRTUAL_FENCE_CONTACT_MARGIN_PX = _env_float(
+    "IBVAP_VIRTUAL_FENCE_CONTACT_MARGIN_PX", 2.0, minimum=0.0
+)
 LOITERING_SECONDS = _env_float("IBVAP_LOITERING_SECONDS", 15.0, minimum=0.1)
 LOITERING_MOVEMENT_THRESHOLD_PX = _env_float(
     "IBVAP_LOITERING_MOVEMENT_THRESHOLD_PX", 60.0, minimum=1.0
