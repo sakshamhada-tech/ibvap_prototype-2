@@ -63,6 +63,8 @@ jinja2==3.1.6
     # via torch
 kiwisolver==1.5.1
     # via matplotlib
+lap==0.5.13
+    # via -r requirements.txt
 lazy-loader==0.5
     # via scikit-image
 markupsafe==3.0.3
@@ -83,6 +85,7 @@ numpy==2.4.6 ; python_full_version < '3.12'
     #   contourpy
     #   easyocr
     #   imageio
+    #   lap
     #   matplotlib
     #   opencv-python
     #   opencv-python-headless
@@ -99,6 +102,7 @@ numpy==2.5.2 ; python_full_version >= '3.12'
     #   contourpy
     #   easyocr
     #   imageio
+    #   lap
     #   matplotlib
     #   opencv-python
     #   opencv-python-headless
