@@ -328,11 +328,26 @@ def _operator(request: Request) -> dict | None:
 
 def _http_origin_allowed(request: Request) -> bool:
     origin = request.headers.get("origin")
-    if origin:
-        return is_allowed_origin(origin, request.headers.get("host", ""), config.ALLOWED_ORIGINS)
-    # Non-browser clients may omit Origin. Modern browsers expose cross-site
-    # form submissions through Sec-Fetch-Site even when Origin is absent.
-    return request.headers.get("sec-fetch-site") in {None, "none", "same-origin"}
+    if origin and is_allowed_origin(
+        origin,
+        request.headers.get("host", ""),
+        config.ALLOWED_ORIGINS,
+    ):
+        return True
+
+    # Fetch Metadata headers are browser-controlled and cannot be set by
+    # cross-origin JavaScript. They provide a secure fallback for privacy
+    # configurations that serialize a local form's Origin as "null" or pass
+    # through a development proxy that rewrites Host. A real cross-site form
+    # submission is still rejected as "cross-site" (or "same-site").
+    fetch_site_header = request.headers.get("sec-fetch-site")
+    fetch_site = fetch_site_header.lower() if fetch_site_header else fetch_site_header
+    if fetch_site in {"none", "same-origin"}:
+        return True
+
+    # Non-browser clients may omit both headers. They do not carry a victim's
+    # browser-managed Strict session cookie and therefore cannot perform CSRF.
+    return origin is None and fetch_site is None
 
 
 @app.get("/login")
@@ -346,7 +361,18 @@ def login_page(request: Request):
 async def login(request: Request):
     client_ip = _client_ip(request) or "unknown"
     if not _http_origin_allowed(request):
-        audit.log("login_origin_rejected", success=False, client_ip=client_ip)
+        origin_details = {
+            "host": request.headers.get("host", "")[:256],
+            "origin": request.headers.get("origin", "")[:512],
+            "sec_fetch_site": request.headers.get("sec-fetch-site", "")[:64],
+        }
+        audit.log(
+            "login_origin_rejected",
+            success=False,
+            client_ip=client_ip,
+            details=origin_details,
+        )
+        LOGGER.warning("login origin rejected: %r", origin_details)
         return JSONResponse({"detail": "origin not allowed"}, status_code=403)
     if not login_limiter.allow(client_ip):
         audit.log("login_rate_limited", success=False, client_ip=client_ip)

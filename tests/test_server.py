@@ -58,11 +58,22 @@ def test_login_accepts_equivalent_loopback_origin(client):
     assert response.headers["location"] == "/"
 
 
+def test_login_accepts_browser_same_origin_metadata_fallback(client):
+    response = client.post(
+        "/login",
+        data={"username": "operator", "password": "a sufficiently long password"},
+        headers={"origin": "null", "sec-fetch-site": "same-origin"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+
+
 def test_login_rejects_cross_origin_and_bad_credentials(client):
     cross_origin = client.post(
         "/login",
         data={"username": "operator", "password": "a sufficiently long password"},
-        headers={"origin": "https://evil.example"},
+        headers={"origin": "https://evil.example", "sec-fetch-site": "cross-site"},
     )
     assert cross_origin.status_code == 403
 
