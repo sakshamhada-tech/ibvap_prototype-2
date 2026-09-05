@@ -57,10 +57,15 @@ camera reconnects.
 
 ## Requirements
 
-- Python 3.10–3.13; Python 3.11 is the reference version
+- Python 3.11–3.13; Python 3.11 is the reference version
+- Linux, Windows, or Apple Silicon with macOS 14 or newer
 - Sufficient disk/RAM for PyTorch and Ultralytics
 - A webcam, recording, or supported camera URL
 - TLS reverse proxy or certificate/key for non-local dashboard use
+
+Current security-patched PyTorch releases no longer publish Intel macOS wheels,
+so Intel Macs are not supported by the locked environment. Do not work around
+this by silently downgrading PyTorch to an older vulnerable release.
 
 The repository intentionally retains `yolov8n.pt` for offline model startup.
 Its checksum and provenance metadata are in `models/MODEL_MANIFEST.json` and
@@ -72,8 +77,15 @@ its licensing notice is in `THIRD_PARTY_NOTICES.md`.
 python3.11 -m venv .venv
 source .venv/bin/activate                 # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.lock  # reproducible Python 3.11 environment
+python -m pip install -r requirements.lock
+python scripts/doctor.py
 ```
+
+The lock is generated as a universal requirements file: Linux-only CUDA
+packages are guarded by platform markers and are skipped on macOS and Windows.
+Use the `-r` flag—`pip install requirements.lock` does not install a
+requirements file. Always run the app with the same `python` interpreter used
+for installation.
 
 ANPR is disabled by default. Install and opt in only when needed:
 
@@ -84,6 +96,26 @@ export IBVAP_ENABLE_ANPR=true
 
 EasyOCR may download separate weights on first use. The base system does not
 need those weights.
+
+### macOS: `No module named 'cv2'`
+
+The import is named `cv2`, but its package is named `opencv-python`. Recreate
+the environment if a previous platform-specific lock install stopped partway:
+
+```bash
+deactivate 2>/dev/null || true
+rm -rf .venv
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.lock
+python scripts/doctor.py
+python -c "import cv2; print(cv2.__version__)"
+```
+
+Confirm that `which python` points to `.venv/bin/python`. If installation
+succeeds but another terminal still cannot import `cv2`, that terminal is
+using a different interpreter or does not have the virtual environment active.
 
 ## Configuration
 
@@ -203,10 +235,11 @@ make check
 ```
 
 `make check` runs formatting checks, linting, unit tests with coverage, a Bandit
-source scan, and dependency auditing when `requirements.lock` is present.
-Critical geometry, loitering continuity, alert cooldown, bounded broadcast,
-authentication, origin, rate-limit, and source-time behavior have unit tests.
-CI performs the same checks on Python 3.11.
+source scan, and audits all dependency locks. `make lock` regenerates universal
+platform-aware locks with `uv`. Critical geometry, loitering continuity, alert
+cooldown, bounded broadcast, authentication, origin, rate-limit, and source-time
+behavior have unit tests. CI also verifies that the pinned OpenCV package
+provides the `cv2` import on macOS.
 
 ## Operational limitations
 

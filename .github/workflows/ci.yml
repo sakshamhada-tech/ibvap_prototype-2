@@ -28,4 +28,25 @@ jobs:
       - name: Static security scan
         run: python -m bandit -q -r config.py detector.py main.py pipeline.py security.py server.py utils -s B104
       - name: Dependency vulnerability audit
-        run: python -m pip_audit -r requirements.lock
+        run: make audit
+      - name: Resolve universal lock for Apple Silicon macOS 14
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+        run: uv pip install --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements.lock
+
+  macos-opencv:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install pinned OpenCV package
+        run: |
+          OPENCV_SPEC="$(grep -E '^opencv-python==' requirements.lock | head -1)"
+          test -n "$OPENCV_SPEC"
+          python -m pip install "$OPENCV_SPEC"
+      - name: Verify cv2 import
+        run: python -c "import cv2, sys; print(sys.executable, cv2.__version__)"
