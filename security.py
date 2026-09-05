@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import threading
@@ -133,18 +134,60 @@ def is_allowed_host(host_header: str, allowed_hosts: tuple[str, ...]) -> bool:
     return False
 
 
-def is_allowed_origin(origin: str | None, host: str, allowed_origins: tuple[str, ...]) -> bool:
-    """Allow explicitly configured origins or the request's exact host."""
-    if not origin:
-        return False
-    normalized = origin.rstrip("/")
-    if normalized in {entry.rstrip("/") for entry in allowed_origins}:
+def _is_loopback(hostname: str) -> bool:
+    hostname = hostname.lower().rstrip(".")
+    if hostname == "localhost":
         return True
     try:
-        parsed = urlparse(normalized)
+        return ipaddress.ip_address(hostname).is_loopback
     except ValueError:
         return False
-    return parsed.scheme in {"http", "https"} and parsed.netloc.lower() == host.lower()
+
+
+def _origin_parts(value: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlparse(value.rstrip("/"))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
+    return parsed.scheme, parsed.hostname.lower().rstrip("."), port
+
+
+def is_allowed_origin(origin: str | None, host: str, allowed_origins: tuple[str, ...]) -> bool:
+    """Allow configured origins, exact request hosts, or equivalent loopback aliases.
+
+    Browsers can normalize a local URL from ``localhost`` to ``127.0.0.1`` (or
+    ``::1``). Those names identify the same local machine and are accepted only
+    when their effective ports match. Non-loopback hosts must match exactly.
+    """
+    if not origin:
+        return False
+    origin_parts = _origin_parts(origin)
+    if origin_parts is None:
+        return False
+    if any(_origin_parts(entry) == origin_parts for entry in allowed_origins):
+        return True
+
+    scheme, origin_hostname, origin_port = origin_parts
+    try:
+        request_host = urlparse(f"//{host}")
+        request_hostname = request_host.hostname
+        request_port = request_host.port or (443 if scheme == "https" else 80)
+    except ValueError:
+        return False
+    if not request_hostname or request_port != origin_port:
+        return False
+
+    request_hostname = request_hostname.lower().rstrip(".")
+    return request_hostname == origin_hostname or (
+        _is_loopback(request_hostname) and _is_loopback(origin_hostname)
+    )
 
 
 class AuditLogger:

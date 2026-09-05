@@ -58,7 +58,16 @@ def test_websocket_origin_must_match_host_or_allowlist():
     assert is_allowed_origin("https://console.example", "console.example", ())
     assert is_allowed_origin("https://public.example", "internal:8000", ("https://public.example",))
     assert not is_allowed_origin("https://evil.example", "console.example", ())
+    assert not is_allowed_origin("https://console.example:8443", "console.example:443", ())
+    assert not is_allowed_origin("https://console.example/path", "console.example", ())
     assert not is_allowed_origin(None, "console.example", ())
+
+
+def test_localhost_origin_aliases_are_equivalent_only_on_the_same_port():
+    assert is_allowed_origin("http://localhost:8000", "127.0.0.1:8000", ())
+    assert is_allowed_origin("http://127.0.0.1:8000", "localhost:8000", ())
+    assert is_allowed_origin("http://[::1]:8000", "localhost:8000", ())
+    assert not is_allowed_origin("http://localhost:9000", "127.0.0.1:8000", ())
 
 
 def test_audit_logger_writes_structured_record_without_secret(tmp_path):

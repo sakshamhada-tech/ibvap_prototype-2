@@ -10,7 +10,7 @@ from utils.broker import AlertBroker, ConnectionLimiter
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(server.config, "validate_server_security", lambda: None)
-    monkeypatch.setattr(server.config, "ALLOWED_HOSTS", ("testserver",))
+    monkeypatch.setattr(server.config, "ALLOWED_HOSTS", ("testserver", "localhost", "127.0.0.1"))
     monkeypatch.setattr(server.capture_service, "start", lambda: None)
     monkeypatch.setattr(server.capture_service, "stop", lambda: None)
     monkeypatch.setattr(
@@ -45,6 +45,17 @@ def test_protected_routes_and_security_headers(client):
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     assert client.get("/api/stats").status_code == 401
     assert client.get("/", headers={"host": "evil.example"}).status_code == 400
+
+
+def test_login_accepts_equivalent_loopback_origin(client):
+    response = client.post(
+        "/login",
+        data={"username": "operator", "password": "a sufficiently long password"},
+        headers={"host": "127.0.0.1:8000", "origin": "http://localhost:8000"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
 
 
 def test_login_rejects_cross_origin_and_bad_credentials(client):

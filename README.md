@@ -176,8 +176,10 @@ python server.py
 ```
 
 Open `http://localhost:8000/login`. Plain HTTP is suitable only for loopback
-development. The credentials above are newly generated each shell session;
-store controlled deployment values in a secret manager.
+development. `localhost`, `127.0.0.1`, and `::1` are treated as equivalent
+local origins when the port matches; other origins remain restricted. The
+credentials above are newly generated each shell session; store controlled
+deployment values in a secret manager.
 
 Endpoints:
 
