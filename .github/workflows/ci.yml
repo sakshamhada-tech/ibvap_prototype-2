@@ -32,7 +32,7 @@ jobs:
       - name: Resolve universal lock for Apple Silicon macOS 14
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
-        run: uv pip install --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements.lock
+        run: uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements.lock
 
   macos-opencv:
     runs-on: macos-14
