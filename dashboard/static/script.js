@@ -1,16 +1,9 @@
-// IBVAP Dashboard client
-// Connects to /ws for live alerts + stats, updates the DOM directly
-// (no framework needed for a page this size).
-
 const MAX_ALERTS_SHOWN = 40;
-
-// Maps backend alert_type -> visual severity + human-readable label.
-// Severity drives color: critical=red, caution=amber, info=green.
 const ALERT_META = {
   VIRTUAL_FENCE_INTRUSION: { level: "critical", label: "Fence intrusion" },
-  SUSPICIOUS_LOITERING:    { level: "caution",  label: "Loitering" },
-  NIGHT_MOVEMENT:          { level: "caution",  label: "Night movement" },
-  ANPR_READ:               { level: "info",     label: "Plate read" },
+  SUSPICIOUS_LOITERING: { level: "caution", label: "Loitering" },
+  NIGHT_MOVEMENT: { level: "caution", label: "Night movement" },
+  ANPR_READ: { level: "info", label: "Plate read" },
 };
 
 const el = {
@@ -30,8 +23,7 @@ const el = {
 };
 
 function tickClock() {
-  const now = new Date();
-  el.clock.textContent = now.toLocaleTimeString("en-GB", { hour12: false });
+  el.clock.textContent = new Date().toLocaleTimeString("en-GB", { hour12: false });
 }
 setInterval(tickClock, 1000);
 tickClock();
@@ -45,44 +37,37 @@ function formatUptime(seconds) {
 }
 
 function renderAlert(alert) {
-  // clear the "no alerts yet" placeholder on first real alert
   const placeholder = el.alertLog.querySelector(".alert-empty");
   if (placeholder) placeholder.remove();
-
-  const meta = ALERT_META[alert.alert_type] || { level: "info", label: alert.alert_type };
-
+  const meta = ALERT_META[alert.alert_type] || {
+    level: "info",
+    label: alert.alert_type || "Unknown event",
+  };
   const item = document.createElement("li");
   item.className = "alert-item";
   item.dataset.level = meta.level;
 
   const top = document.createElement("div");
   top.className = "alert-item__top";
-
   const type = document.createElement("span");
   type.className = "alert-item__type";
-  type.textContent = meta.label + (alert.track_id !== null ? ` · #${alert.track_id}` : "");
-
-  const time = document.createElement("span");
-  time.className = "mono muted";
-  time.textContent = alert.timestamp.split(" ")[1] || alert.timestamp;
-
-  top.appendChild(type);
-  top.appendChild(time);
+  type.textContent = `${meta.label}${alert.track_id != null ? ` · #${alert.track_id}` : ""}`;
+  const eventTime = document.createElement("span");
+  eventTime.className = "mono muted";
+  const timestamp = typeof alert.timestamp === "string" ? alert.timestamp : "";
+  eventTime.textContent = timestamp.includes("T")
+    ? timestamp.split("T")[1].replace(/\+.*/, "")
+    : timestamp.split(" ")[1] || timestamp;
+  top.append(type, eventTime);
 
   const detail = document.createElement("div");
   detail.className = "alert-item__detail";
-  detail.textContent = alert.details;
-
-  item.appendChild(top);
-  item.appendChild(detail);
-
+  detail.textContent = alert.details || "";
+  item.append(top, detail);
   el.alertLog.prepend(item);
 
-  // cap the visible list so the DOM doesn't grow unbounded over a long demo
   const items = el.alertLog.querySelectorAll(".alert-item");
-  if (items.length > MAX_ALERTS_SHOWN) {
-    items[items.length - 1].remove();
-  }
+  if (items.length > MAX_ALERTS_SHOWN) items[items.length - 1].remove();
 }
 
 function applyStats(stats) {
@@ -90,14 +75,12 @@ function applyStats(stats) {
   if (stats.vehicles !== undefined) el.statVehicles.textContent = stats.vehicles;
   if (stats.alerts_total !== undefined) {
     el.statAlerts.textContent = stats.alerts_total;
-    el.alertCount.textContent = `${stats.alerts_total} total`;
+    el.alertCount.textContent = `${stats.alerts_total} this session`;
   }
   if (stats.uptime_seconds !== undefined) {
     el.statUptime.textContent = formatUptime(stats.uptime_seconds);
   }
-  if (stats.fps !== undefined) {
-    el.statFps.textContent = stats.fps.toFixed(1);
-  }
+  if (stats.fps !== undefined) el.statFps.textContent = Number(stats.fps).toFixed(1);
   if (stats.frame_number !== undefined) {
     el.frameCounter.textContent = `frame ${stats.frame_number}`;
   }
@@ -105,33 +88,47 @@ function applyStats(stats) {
     el.modeBadge.textContent = stats.night_mode ? "night" : "day";
     el.modeBadge.dataset.mode = stats.night_mode ? "night" : "day";
   }
+  if (stats.service_status) {
+    const running = stats.service_status === "running";
+    el.connDot.dataset.state = running ? "live" : "down";
+    el.connLabel.textContent = running ? "live" : stats.service_status;
+    el.video.parentElement.dataset.state = running ? "live" : "down";
+  }
 }
 
+let reconnectTimer;
 function connect() {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
-
-  ws.onopen = () => {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
+  socket.onopen = () => {
     el.connDot.dataset.state = "live";
     el.connLabel.textContent = "live";
   };
-
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
-    if (msg.type === "alert") {
-      renderAlert(msg.data);
-    } else if (msg.type === "stats") {
-      applyStats(msg.data);
+  socket.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data);
+      if (message.type === "alert") renderAlert(message.data);
+      if (message.type === "stats") applyStats(message.data);
+    } catch (error) {
+      console.error("Invalid dashboard message", error);
     }
   };
-
-  ws.onclose = () => {
+  socket.onclose = (event) => {
     el.connDot.dataset.state = "down";
-    el.connLabel.textContent = "reconnecting";
-    setTimeout(connect, 1500);
+    if (event.code === 4403) {
+      window.location.assign("/login");
+      return;
+    }
+    el.connLabel.textContent = event.code === 1013 ? "capacity reached" : "reconnecting";
+    reconnectTimer = window.setTimeout(connect, 1500);
   };
-
-  ws.onerror = () => ws.close();
+  socket.onerror = () => socket.close();
 }
 
+window.addEventListener("beforeunload", () => window.clearTimeout(reconnectTimer));
+el.video.addEventListener("error", () => {
+  el.connDot.dataset.state = "down";
+  el.connLabel.textContent = "feed unavailable";
+  el.video.parentElement.dataset.state = "down";
+});
 connect();

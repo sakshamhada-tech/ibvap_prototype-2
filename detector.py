@@ -1,158 +1,175 @@
-"""
-Detector
---------
-Wraps YOLOv8 (via ultralytics) for combined object detection + tracking,
-plus a lightweight face detector and ANPR (plate localization + OCR).
+"""YOLO tracking plus optional face and number-plate detection."""
 
-Why YOLOv8 + built-in tracker:
-  - Single model handles person + vehicle detection (COCO classes)
-  - `model.track(...)` gives each object a persistent ID across frames
-    for free (ByteTrack under the hood) - which the virtual fence and
-    loitering logic both depend on.
+from __future__ import annotations
 
-ANPR approach:
-  - Plate localization uses OpenCV's bundled Haar cascade
-    (haarcascade_russian_plate_number.xml) - ships with opencv-python,
-    so no extra model download is needed for this step. It's a general
-    rectangular-plate detector, not India-specific, but works fine for
-    a demo despite the filename.
-  - Text recognition uses EasyOCR, loaded lazily (only if ANPR is
-    enabled) since it pulls in a ~100MB model on first run and would
-    otherwise slow down startup for people not using this feature.
-"""
-
+import hashlib
+import logging
 import re
+from pathlib import Path
 
 import cv2
 from ultralytics import YOLO
 
 import config
 
+LOGGER = logging.getLogger(__name__)
+
 
 class Detector:
     def __init__(self):
-        print(f"[INIT] Loading YOLO model: {config.YOLO_MODEL_PATH}")
+        self._verify_model()
+        LOGGER.info("loading YOLO model %s", config.YOLO_MODEL_PATH)
         self.model = YOLO(config.YOLO_MODEL_PATH)
 
         self.face_cascade = None
         if config.ENABLE_FACE_DETECTION:
-            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            self.face_cascade = cv2.CascadeClassifier(cascade_path)
-            print("[INIT] Face detector (Haar cascade) loaded")
+            self.face_cascade = self._load_cascade("haarcascade_frontalface_default.xml")
 
         self.plate_cascade = None
         self.ocr_reader = None
         if config.ENABLE_ANPR:
-            plate_cascade_path = cv2.data.haarcascades + "haarcascade_russian_plate_number.xml"
-            self.plate_cascade = cv2.CascadeClassifier(plate_cascade_path)
-
-            print("[INIT] Loading OCR engine for ANPR (first run downloads model weights)...")
-            import easyocr  # imported lazily - heavy dependency, only needed here
+            self.plate_cascade = self._load_cascade("haarcascade_russian_plate_number.xml")
+            try:
+                import easyocr
+            except ImportError as exc:
+                raise RuntimeError(
+                    "ANPR is enabled but EasyOCR is not installed; install the anpr dependency group"
+                ) from exc
+            LOGGER.info("loading EasyOCR for ANPR; first use may download OCR weights")
             self.ocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-            print("[INIT] ANPR ready (plate cascade + EasyOCR)")
 
-    def track_frame(self, frame):
-        """
-        Runs detection + tracking on a single frame.
+    @staticmethod
+    def _verify_model() -> None:
+        model_path = Path(config.YOLO_MODEL_PATH)
+        if not config.YOLO_MODEL_SHA256 or not model_path.is_file():
+            return
+        checksum = hashlib.sha256()
+        with model_path.open("rb") as model_file:
+            for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+                checksum.update(chunk)
+        if checksum.hexdigest() != config.YOLO_MODEL_SHA256:
+            raise RuntimeError(
+                f"model checksum mismatch for {model_path}; refuse to load unverified weights"
+            )
 
-        Returns a list of dicts:
-            {track_id, class_id, class_name, bbox (x1,y1,x2,y2), centroid, conf}
-        """
+    @staticmethod
+    def _load_cascade(filename: str):
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + filename)
+        if cascade.empty():
+            raise RuntimeError(f"failed to load OpenCV cascade {filename}")
+        return cascade
+
+    def track_frame(self, frame) -> list[dict]:
+        """Return relevant YOLO detections, including temporarily untracked boxes."""
         results = self.model.track(
             frame,
             persist=True,
             conf=config.CONFIDENCE_THRESHOLD,
-            classes=[config.PERSON_CLASS_ID, *config.VEHICLE_CLASS_IDS.keys()],
+            classes=[config.PERSON_CLASS_ID, *config.VEHICLE_CLASS_IDS],
             verbose=False,
         )
+        if not results or results[0].boxes is None:
+            return []
+
+        boxes = results[0].boxes
+        coordinates = boxes.xyxy.cpu().numpy()
+        class_ids = boxes.cls.cpu().numpy()
+        confidences = boxes.conf.cpu().numpy()
+        track_ids = boxes.id.cpu().numpy() if boxes.id is not None else [None] * len(coordinates)
 
         detections = []
-        if results and results[0].boxes is not None and results[0].boxes.id is not None:
-            boxes = results[0].boxes
-            for box, track_id, cls, conf in zip(
-                boxes.xyxy.cpu().numpy(),
-                boxes.id.cpu().numpy(),
-                boxes.cls.cpu().numpy(),
-                boxes.conf.cpu().numpy(),
-            ):
-                x1, y1, x2, y2 = box
-                cls_id = int(cls)
-                class_name = (
-                    "person" if cls_id == config.PERSON_CLASS_ID
-                    else config.VEHICLE_CLASS_IDS.get(cls_id, f"class_{cls_id}")
-                )
-                centroid = ((x1 + x2) / 2, (y1 + y2) / 2)
-
-                detections.append({
-                    "track_id": int(track_id),
-                    "class_id": cls_id,
+        for box, raw_track_id, raw_class_id, confidence in zip(
+            coordinates, track_ids, class_ids, confidences, strict=True
+        ):
+            x1, y1, x2, y2 = box
+            class_id = int(raw_class_id)
+            class_name = (
+                "person"
+                if class_id == config.PERSON_CLASS_ID
+                else config.VEHICLE_CLASS_IDS.get(class_id, f"class_{class_id}")
+            )
+            detections.append(
+                {
+                    "track_id": None if raw_track_id is None else int(raw_track_id),
+                    "class_id": class_id,
                     "class_name": class_name,
                     "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                    "centroid": centroid,
-                    "conf": float(conf),
-                })
-
+                    "centroid": ((x1 + x2) / 2, (y1 + y2) / 2),
+                    "conf": float(confidence),
+                }
+            )
         return detections
 
-    def detect_faces(self, frame, person_bbox):
-        """Runs face detection cropped to a person's bounding box (cheap + focused)."""
+    def reset_tracking(self) -> None:
+        """Clear ByteTrack state after a source discontinuity or reconnect."""
+        predictor = getattr(self.model, "predictor", None)
+        for tracker in getattr(predictor, "trackers", ()) or ():
+            reset = getattr(tracker, "reset", None)
+            if callable(reset):
+                reset()
+
+    def detect_faces(self, frame, person_bbox) -> list[tuple[int, int, int, int]]:
         if self.face_cascade is None:
             return []
-
-        x1, y1, x2, y2 = person_bbox
-        x1, y1 = max(0, x1), max(0, y1)
-        crop = frame[y1:y2, x1:x2]
-        if crop.size == 0:
+        crop, offset = self._crop(frame, person_bbox)
+        if crop is None:
             return []
-
+        x_offset, y_offset = offset
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
-
-        # convert face boxes back to full-frame coordinates
-        return [(x1 + fx, y1 + fy, x1 + fx + fw, y1 + fy + fh) for (fx, fy, fw, fh) in faces]
+        return [
+            (
+                x_offset + int(x),
+                y_offset + int(y),
+                x_offset + int(x + width),
+                y_offset + int(y + height),
+            )
+            for x, y, width, height in faces
+        ]
 
     def detect_plate(self, frame, vehicle_bbox):
-        """
-        ANPR: locate a plate-shaped region inside the vehicle's bounding box,
-        then run OCR on it.
-
-        Returns (plate_text, plate_bbox_in_full_frame_coords) or (None, None)
-        if no plate was confidently found/read. Off by default
-        (config.ENABLE_ANPR = False) - flip it on once you've accepted the
-        one-time EasyOCR model download.
-        """
+        """Return ``(text, full_frame_bbox)`` for the best OCR plate candidate."""
         if self.plate_cascade is None or self.ocr_reader is None:
             return None, None
-
-        vx1, vy1, vx2, vy2 = vehicle_bbox
-        vx1, vy1 = max(0, vx1), max(0, vy1)
-        vehicle_crop = frame[vy1:vy2, vx1:vx2]
-        if vehicle_crop.size == 0:
+        vehicle_crop, offset = self._crop(frame, vehicle_bbox)
+        if vehicle_crop is None:
             return None, None
+        x_offset, y_offset = offset
 
         gray = cv2.cvtColor(vehicle_crop, cv2.COLOR_BGR2GRAY)
         plates = self.plate_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
         if len(plates) == 0:
             return None, None
 
-        # take the largest candidate region (most likely to actually be the plate)
-        px, py, pw, ph = max(plates, key=lambda p: p[2] * p[3])
-        plate_crop = vehicle_crop[py:py + ph, px:px + pw]
+        x, y, width, height = max(plates, key=lambda plate: plate[2] * plate[3])
+        plate_crop = vehicle_crop[y : y + height, x : x + width]
         if plate_crop.size == 0:
             return None, None
-
         ocr_results = self.ocr_reader.readtext(plate_crop)
         if not ocr_results:
             return None, None
 
-        # pick the highest-confidence text read, clean it up (plates are
-        # alphanumeric - strip anything OCR mis-reads as punctuation/noise)
-        best = max(ocr_results, key=lambda r: r[2])
-        raw_text, ocr_conf = best[1], best[2]
+        best = max(ocr_results, key=lambda result: result[2])
+        raw_text, ocr_confidence = best[1], float(best[2])
         plate_text = re.sub(r"[^A-Za-z0-9]", "", raw_text).upper()
-
-        if not plate_text or ocr_conf < 0.35:
+        if not plate_text or ocr_confidence < config.ANPR_MIN_OCR_CONFIDENCE:
             return None, None
 
-        full_frame_bbox = (vx1 + px, vy1 + py, vx1 + px + pw, vy1 + py + ph)
-        return plate_text, full_frame_bbox
+        bbox = (
+            x_offset + int(x),
+            y_offset + int(y),
+            x_offset + int(x + width),
+            y_offset + int(y + height),
+        )
+        return plate_text, bbox
+
+    @staticmethod
+    def _crop(frame, bbox):
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        x1, x2 = max(0, min(width, x1)), max(0, min(width, x2))
+        y1, y2 = max(0, min(height, y1)), max(0, min(height, y2))
+        if x2 <= x1 or y2 <= y1:
+            return None, None
+        crop = frame[y1:y2, x1:x2]
+        return (crop, (x1, y1)) if crop.size else (None, None)

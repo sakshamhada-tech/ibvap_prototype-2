@@ -1,84 +1,148 @@
-"""
-IBVAP Prototype - CLI Demo
----------------------------
-AI-Based Intelligent Video Analytics Platform for Border Surveillance
-using existing CCTV infrastructure.
+"""Command-line/OpenCV entry point for the IBVAP analytics pipeline."""
 
-This is the terminal/OpenCV-window demo. For the browser dashboard, run
-server.py instead - both share the exact same analytics code in pipeline.py.
+from __future__ import annotations
 
-Run:
-    python3 main.py
-
-Edit config.py to point VIDEO_SOURCE at your own video file, a webcam
-index (0), or an RTSP camera URL.
-"""
-
+import logging
 import os
+import time
 
 import cv2
 
 import config
 from pipeline import VideoPipeline
+from utils.sources import (
+    describe_source,
+    is_file_source,
+    is_network_source,
+    normalize_fps,
+    recorded_source_time,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 
-def main():
-    if isinstance(config.VIDEO_SOURCE, str) and not config.VIDEO_SOURCE.startswith("rtsp"):
-        if not os.path.exists(config.VIDEO_SOURCE):
-            raise FileNotFoundError(
-                f"Video source not found: {config.VIDEO_SOURCE}\n"
-                f"Put a demo video at that path, or change VIDEO_SOURCE in "
-                f"config.py to a webcam index (e.g. 0) or an RTSP URL."
-            )
+def _open_capture():
+    if is_network_source(config.VIDEO_SOURCE):
+        capture = cv2.VideoCapture(
+            config.VIDEO_SOURCE,
+            cv2.CAP_ANY,
+            [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
+                config.CAMERA_OPEN_TIMEOUT_MILLISECONDS,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                config.CAMERA_READ_TIMEOUT_MILLISECONDS,
+            ],
+        )
+    else:
+        capture = cv2.VideoCapture(config.VIDEO_SOURCE)
+    if capture.isOpened():
+        return capture
+    capture.release()
+    return None
 
-    cap = cv2.VideoCapture(config.VIDEO_SOURCE)
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video source: {config.VIDEO_SOURCE}")
 
-    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    src_fps = cap.get(cv2.CAP_PROP_FPS) or 25
-    print(f"[INIT] Video source opened: {frame_w}x{frame_h} @ {src_fps:.1f} fps")
-    print(f"[INIT] Virtual fence line (pixel coords): {config.VIRTUAL_FENCE_LINE}")
-    print("[INIT] Adjust config.VIRTUAL_FENCE_LINE if it doesn't align with your scene.\n")
+def _wait_for_reconnect(pipeline: VideoPipeline):
+    while True:
+        LOGGER.warning(
+            "video source unavailable; retrying in %.1fs", config.CAMERA_RECONNECT_SECONDS
+        )
+        time.sleep(config.CAMERA_RECONNECT_SECONDS)
+        capture = _open_capture()
+        if capture is not None:
+            pipeline.reset_tracking()
+            LOGGER.info("video source reconnected")
+            return capture
 
+
+def main() -> None:
+    logging.basicConfig(
+        level=os.getenv("IBVAP_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    if is_file_source(config.VIDEO_SOURCE) and not os.path.isfile(config.VIDEO_SOURCE):
+        raise FileNotFoundError(
+            f"Video source not found: {config.VIDEO_SOURCE}\n"
+            "Set IBVAP_VIDEO_SOURCE to a file, camera index, or supported URL."
+        )
+
+    capture = _open_capture()
+    if capture is None:
+        raise RuntimeError(f"Could not open video source: {describe_source(config.VIDEO_SOURCE)}")
+
+    frame_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    source_fps = normalize_fps(capture.get(cv2.CAP_PROP_FPS))
+    if frame_width <= 0 or frame_height <= 0:
+        capture.release()
+        raise RuntimeError("Video source reported invalid frame dimensions")
+
+    LOGGER.info("source opened: %sx%s at %.2f fps", frame_width, frame_height, source_fps)
+    LOGGER.info("virtual fence: %s", config.VIRTUAL_FENCE_LINE)
     pipeline = VideoPipeline()
-
     writer = None
+
     if config.SAVE_ANNOTATED_VIDEO:
         os.makedirs(os.path.dirname(config.ANNOTATED_VIDEO_PATH) or ".", exist_ok=True)
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(config.ANNOTATED_VIDEO_PATH, fourcc, src_fps,
-                                  (frame_w, frame_h))
+        writer = cv2.VideoWriter(
+            config.ANNOTATED_VIDEO_PATH,
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            source_fps,
+            (frame_width, frame_height),
+        )
+        if not writer.isOpened():
+            capture.release()
+            pipeline.close()
+            raise RuntimeError(f"Could not open output writer: {config.ANNOTATED_VIDEO_PATH}")
 
+    show_window = config.SHOW_LIVE_WINDOW
+    if show_window and os.name != "nt" and not os.getenv("DISPLAY"):
+        LOGGER.warning("DISPLAY is unavailable; disabling the OpenCV window")
+        show_window = False
+
+    source_is_file = is_file_source(config.VIDEO_SOURCE)
+    source_frame_number = 0
     try:
         while True:
-            ok, frame = cap.read()
+            ok, frame = capture.read()
             if not ok:
-                print("[INFO] End of stream / cannot read frame. Stopping.")
-                break
+                if source_is_file:
+                    LOGGER.info("end of recording")
+                    break
+                capture.release()
+                capture = _wait_for_reconnect(pipeline)
+                source_frame_number = 0
+                continue
 
-            annotated = pipeline.process_frame(frame)
-
+            source_frame_number += 1
+            source_time = (
+                recorded_source_time(
+                    capture.get(cv2.CAP_PROP_POS_MSEC), source_frame_number, source_fps
+                )
+                if source_is_file
+                else time.monotonic()
+            )
+            annotated = pipeline.process_frame(frame, source_time=source_time)
             if writer is not None:
                 writer.write(annotated)
-
-            if config.SHOW_LIVE_WINDOW:
-                cv2.imshow("IBVAP - Border Surveillance Demo", annotated)
+            if show_window:
+                cv2.imshow("IBVAP - Border Surveillance", annotated)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
-                    print("[INFO] 'q' pressed - stopping.")
+                    LOGGER.info("q pressed; stopping")
                     break
-
+    except KeyboardInterrupt:
+        LOGGER.info("interrupted; stopping")
     finally:
-        cap.release()
+        capture.release()
         if writer is not None:
             writer.release()
-        cv2.destroyAllWindows()
+        if show_window:
+            cv2.destroyAllWindows()
         pipeline.close()
-        print(f"\n[DONE] Processed {pipeline.frame_number} frames.")
-        if config.SAVE_ANNOTATED_VIDEO:
-            print(f"[DONE] Annotated video saved to: {config.ANNOTATED_VIDEO_PATH}")
-        print(f"[DONE] Alert log saved to: {config.ALERT_LOG_CSV}")
+
+    LOGGER.info("processed %s frames", pipeline.frame_number)
+    if writer is not None:
+        LOGGER.info("annotated video: %s", config.ANNOTATED_VIDEO_PATH)
+    LOGGER.info("alert log: %s", config.ALERT_LOG_CSV)
 
 
 if __name__ == "__main__":

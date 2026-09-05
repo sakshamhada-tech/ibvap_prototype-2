@@ -1,0 +1,49 @@
+[project]
+name = "ibvap-prototype"
+version = "0.2.0"
+description = "Single-camera intelligent border video analytics prototype"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "Proprietary" }
+dependencies = [
+  "ultralytics>=8.2.0,<9.0.0",
+  "opencv-python>=4.9.0,<5.0.0",
+  "numpy>=1.26.0,<3.0.0",
+  "fastapi>=0.110.0,<1.0.0",
+  "uvicorn[standard]>=0.29.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+anpr = ["opencv-python-headless>=4.9.0,<5.0.0", "easyocr>=1.7.1,<2.0.0"]
+dev = [
+  "pytest>=9.0.3,<10.0.0",
+  "pytest-cov>=5.0.0,<7.0.0",
+  "httpx2>=2.0.0,<3.0.0",
+  "ruff>=0.6.0,<1.0.0",
+  "bandit>=1.7.9,<2.0.0",
+  "pip-audit>=2.7.0,<3.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -ra"
+filterwarnings = [
+  "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["utils", "security"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = [".git", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]

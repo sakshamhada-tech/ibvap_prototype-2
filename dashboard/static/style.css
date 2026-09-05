@@ -19,8 +19,8 @@
   --signal-amber: #ffb454;
   --signal-red: #ff5c5c;
 
-  --font-display: 'Space Grotesk', -apple-system, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 * {
@@ -169,6 +169,19 @@ body {
   height: 100%;
   object-fit: contain;
   display: block;
+}
+
+.video-frame[data-state="down"]::after {
+  content: "FEED UNAVAILABLE";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 14, 12, 0.86);
+  color: var(--signal-red);
+  font: 13px var(--font-mono);
+  letter-spacing: 0.12em;
 }
 
 .reticle {
@@ -363,5 +376,133 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .alert-item {
     animation: none;
+  }
+}
+
+/* -------------------------------------------------- authentication */
+
+.logout-form {
+  margin: 0 0 0 12px;
+}
+
+.text-button,
+.primary-button {
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.text-button {
+  padding: 5px 9px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.text-button:hover,
+.primary-button:hover {
+  border-color: var(--signal-green);
+  color: var(--signal-green);
+}
+
+.login-page {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+}
+
+.login-panel {
+  width: min(100%, 420px);
+  padding: 32px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+}
+
+.login-mark {
+  color: var(--signal-green);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.login-panel h1 {
+  margin: 12px 0 8px;
+  font-size: 26px;
+}
+
+.login-panel p {
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-form label {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.login-form input {
+  width: 100%;
+  border: 1px solid var(--hairline);
+  background: var(--bg-void);
+  color: var(--text-primary);
+  padding: 11px 12px;
+  font: 15px var(--font-mono);
+}
+
+.login-form input:focus {
+  border-color: var(--signal-green);
+  outline: none;
+}
+
+.primary-button {
+  margin-top: 18px;
+  padding: 11px 14px;
+  background: var(--signal-green);
+  border-color: var(--signal-green);
+  color: var(--bg-void);
+  font-weight: 600;
+}
+
+.primary-button:hover {
+  background: transparent;
+}
+
+.login-error {
+  padding: 10px 12px;
+  border-left: 2px solid var(--signal-red);
+  background: rgba(255, 92, 92, 0.08);
+  color: var(--signal-red);
+  font-size: 13px;
+}
+
+@media (max-width: 680px) {
+  .console__header,
+  .header__status {
+    align-items: flex-start;
+  }
+
+  .console__header {
+    gap: 12px;
+  }
+
+  .header__status {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .title-sub,
+  .header__status .divider {
+    display: none;
   }
 }

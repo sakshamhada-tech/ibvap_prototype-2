@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install development tools
+        run: python -m pip install -r requirements-dev.lock
+      - name: Formatting
+        run: python -m ruff format --check .
+      - name: Lint
+        run: python -m ruff check .
+      - name: Unit tests
+        run: python -m pytest --cov --cov-report=term-missing
+      - name: Static security scan
+        run: python -m bandit -q -r config.py detector.py main.py pipeline.py security.py server.py utils -s B104
+      - name: Dependency vulnerability audit
+        run: python -m pip_audit -r requirements.lock

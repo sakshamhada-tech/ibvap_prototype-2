@@ -1,0 +1,20 @@
+services:
+  ibvap:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      IBVAP_VIDEO_SOURCE: "${IBVAP_VIDEO_SOURCE:-0}"
+      IBVAP_DASHBOARD_USERNAME: "${IBVAP_DASHBOARD_USERNAME:-operator}"
+      IBVAP_DASHBOARD_PASSWORD: "${IBVAP_DASHBOARD_PASSWORD:?set IBVAP_DASHBOARD_PASSWORD}"
+      IBVAP_SESSION_SECRET: "${IBVAP_SESSION_SECRET:?set IBVAP_SESSION_SECRET}"
+      IBVAP_SHOW_LIVE_WINDOW: "false"
+      IBVAP_ENABLE_ANPR: "${IBVAP_ENABLE_ANPR:-false}"
+    volumes:
+      - ./logs:/app/logs
+      - ./output:/app/output
+      - ./sample_data:/app/sample_data:ro
+    security_opt:
+      - no-new-privileges:true
