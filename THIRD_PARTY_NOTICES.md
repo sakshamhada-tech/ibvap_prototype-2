@@ -17,8 +17,9 @@ is not legal advice.
 
 ## Optional SCRFD and GFPGAN models
 
-The optional enhanced-face panel uses SCRFD code through InsightFace and the
-GFPGAN v1.4 restoration model. The minimal GFPGAN clean inference architecture
+The optional identity-first face-review panel uses SCRFD code through InsightFace.
+GFPGAN v1.4 is available only as an explicitly enabled experimental preview.
+The minimal GFPGAN clean inference architecture
 under `third_party/gfpgan_arch/` is derived from TencentARC/GFPGAN 1.3.8, and
 its Apache-2.0 license is retained there. Its small initialization helper is
 derived from XPixelGroup/BasicSR 1.4.2 under Apache-2.0; BasicSR itself is not a

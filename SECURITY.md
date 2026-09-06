@@ -28,8 +28,8 @@ real camera credentials, faces, number plates, or operational footage.
   should place the app behind organizational SSO and role-based access.
 - Rotate credentials, TLS material, and session secrets regularly.
 - Protect and rotate `logs/audit.jsonl`, `logs/alerts.csv`, and recorded output.
-- Disable ANPR and SCRFD/GFPGAN face enhancement unless their use is authorized
-  and necessary. Review model licenses before installation.
+- Disable ANPR, SCRFD face review, and experimental GFPGAN restoration unless
+  their use is authorized and necessary. Review model licenses before installation.
 
 ## Data handling
 
