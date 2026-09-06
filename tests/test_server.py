@@ -16,6 +16,8 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(server.config, "ALLOWED_HOSTS", ("testserver", "localhost", "127.0.0.1"))
     monkeypatch.setattr(server.capture_service, "start", lambda: None)
     monkeypatch.setattr(server.capture_service, "stop", lambda: None)
+    monkeypatch.setattr(server.alarm_player, "start", lambda: None)
+    monkeypatch.setattr(server.alarm_player, "close", lambda: None)
     monkeypatch.setattr(
         server,
         "auth",
@@ -299,3 +301,21 @@ def test_capture_service_isolates_writer_runtime_failure(monkeypatch, tmp_path):
     assert service.latest_jpeg() == b"jpeg"
     assert service.stats()["frames_processed"] == 1
     assert service.stats()["recording_status"] == "failed"
+
+
+def test_capture_service_fans_alert_to_dashboard_and_server_alarm():
+    received_by_alarm = []
+    alarm = SimpleNamespace(
+        notify=lambda alert: received_by_alarm.append(dict(alert)),
+        snapshot=lambda: {"alarm_status": "ready"},
+    )
+    alert_broker = AlertBroker(queue_size=2, history_size=2)
+    subscriber, _history = alert_broker.subscribe()
+    service = server.CaptureService(alert_broker, alarm)
+    alert = {"alert_type": "VIRTUAL_FENCE_INTRUSION", "track_id": 4}
+
+    service._handle_alert(alert)
+
+    assert subscriber.get_nowait() == alert
+    assert received_by_alarm == [alert]
+    assert service.stats()["alarm_status"] == "ready"

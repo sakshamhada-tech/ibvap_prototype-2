@@ -23,6 +23,7 @@ const el = {
   statUptime: document.getElementById("stat-uptime"),
   statFps: document.getElementById("stat-fps"),
   statRecording: document.getElementById("stat-recording"),
+  statAlarm: document.getElementById("stat-alarm"),
 };
 
 function tickClock() {
@@ -100,6 +101,7 @@ function applyStats(stats) {
   }
   if (stats.fps !== undefined) el.statFps.textContent = Number(stats.fps).toFixed(1);
   if (stats.recording_status) el.statRecording.textContent = stats.recording_status;
+  if (stats.alarm_status) el.statAlarm.textContent = stats.alarm_status;
   if (stats.frame_number !== undefined) {
     el.frameCounter.textContent = `frame ${stats.frame_number}`;
   }

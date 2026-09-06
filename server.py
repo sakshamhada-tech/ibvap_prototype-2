@@ -23,6 +23,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 import config
+from alarms import AlarmPlayer
 from security import (
     AuditLogger,
     AuthManager,
@@ -46,8 +47,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "dashboard" / "static"
 class CaptureService:
     """Own capture, inference, current-frame state, and source reconnection."""
 
-    def __init__(self, broker: AlertBroker):
+    def __init__(self, broker: AlertBroker, alarm_player: AlarmPlayer | None = None):
         self.broker = broker
+        self.alarm_player = alarm_player
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._frame_lock = threading.Lock()
@@ -117,7 +119,7 @@ class CaptureService:
 
             self._set_status("initializing")
             pipeline = VideoPipeline(
-                on_alert=self.broker.publish,
+                on_alert=self._handle_alert,
                 on_face_snapshot=self._update_face_snapshot,
             )
             while not self._stop_event.is_set():
@@ -299,6 +301,11 @@ class CaptureService:
         with self._frame_lock:
             return self._latest_jpeg
 
+    def _handle_alert(self, alert: dict) -> None:
+        self.broker.publish(alert)
+        if self.alarm_player is not None:
+            self.alarm_player.notify(alert)
+
     def stats(self) -> dict:
         with self._stats_lock:
             stats = dict(self._stats)
@@ -308,6 +315,8 @@ class CaptureService:
         with self._faces_lock:
             stats["face_enhancement_status"] = self._face_status
             stats["enhanced_face_count"] = len(self._face_images)
+        if self.alarm_player is not None:
+            stats.update(self.alarm_player.snapshot())
         return stats
 
     def _update_face_snapshot(self, snapshot: dict) -> None:
@@ -463,7 +472,14 @@ broker = AlertBroker(
     queue_size=config.ALERT_SUBSCRIBER_QUEUE_SIZE,
     history_size=config.ALERT_HISTORY_SIZE,
 )
-capture_service = CaptureService(broker)
+alarm_player = AlarmPlayer(
+    enabled=config.ENABLE_AUDIBLE_ALARMS,
+    event_types=config.AUDIBLE_ALARM_EVENTS,
+    volume=config.AUDIBLE_ALARM_VOLUME,
+    cooldown_seconds=config.AUDIBLE_ALARM_COOLDOWN_SECONDS,
+    queue_size=config.AUDIBLE_ALARM_QUEUE_SIZE,
+)
+capture_service = CaptureService(broker, alarm_player)
 auth = AuthManager(
     config.DASHBOARD_USERNAME,
     config.DASHBOARD_PASSWORD,
@@ -490,11 +506,13 @@ websocket_attempt_limiter = SlidingWindowRateLimiter(
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     config.validate_server_security()
+    alarm_player.start()
     capture_service.start()
     try:
         yield
     finally:
         capture_service.stop()
+        alarm_player.close()
 
 
 app = FastAPI(

@@ -23,6 +23,7 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 | Loitering | Continuous person observation with movement and gap limits | Enabled |
 | Night movement | Smoothed central-ROI brightness with hysteresis | Enabled |
 | Alert persistence | Rotating CSV with local-system, UTC, and source/media timestamps | Enabled |
+| Server audible alarms | Distinct bounded tones for intrusion and loitering | Enabled |
 | Security audit log | Rotating structured JSONL for dashboard security events | Server mode |
 | Dashboard | FastAPI, authenticated MJPEG, statistics, and WebSocket alerts | Server mode |
 | Annotated MP4 | `mp4v` recording from both `main.py` and `server.py` | Enabled |
@@ -109,9 +110,54 @@ Alert behavior includes:
 - cooldowns keyed by alert type and track ID;
 - bounded cooldown-state retention;
 - bounded recent alert labels on video overlays;
-- bounded WebSocket alert history; and
+- bounded WebSocket alert history;
 - a separate bounded queue for every connected WebSocket client, so one client
-  cannot consume another client's events.
+  cannot consume another client's events; and
+- non-blocking server-device audible alarms for configured event types.
+
+### Server-device audible alarms
+
+In `server.py` mode, accepted analytics alerts can produce a sound from the
+physical device running the server. On macOS this uses `/usr/bin/afplay` and the
+current default audio output. No sound is sent through the browser.
+
+The built-in patterns are intentionally short, non-verbal, and severity-coded:
+
+| Event | Pattern | Default audible |
+|---|---|---:|
+| `VIRTUAL_FENCE_INTRUSION` | Rapid alternating high/low critical tone | Yes |
+| `SUSPICIOUS_LOITERING` | Slower three-pulse rising caution tone | Yes |
+| `NIGHT_MOVEMENT` | Low double pulse | No |
+| `ANPR_READ` | Short two-note confirmation | No |
+
+Fence contact needs immediate attention, so it uses the highest-priority and
+most urgent pattern. Loitering is cautionary and uses a slower pattern. Night
+movement can occur frequently and ANPR is informational, so enabling either by
+default would create avoidable alarm fatigue.
+
+Alarm playback:
+
+- starts only after the alert has been persisted;
+- runs on a dedicated worker and never blocks capture or analytics;
+- uses a bounded priority queue, with fence intrusion ahead of lower-severity
+  queued events;
+- applies a separate per-event audible cooldown;
+- generates its own temporary WAV files, requiring no downloaded sound asset;
+- exposes status, last type, played count, dropped count, and error state through
+  `/api/stats`; and
+- is failure-isolated when the host has no player or audio output.
+
+macOS uses `afplay`; Windows uses `winsound`; Linux uses `paplay` or `aplay` when
+available. The server process must have access to an active audio session, and
+the operating-system output must not be muted. Audition the patterns before
+operational use:
+
+```bash
+python -m scripts.test_alarm intrusion --volume 0.75
+python -m scripts.test_alarm loitering --volume 0.75
+```
+
+The other accepted test names are `night` and `anpr`.
 
 ### Authenticated web dashboard
 
@@ -119,8 +165,8 @@ Alert behavior includes:
 
 - an authenticated operations dashboard;
 - a continuously updated MJPEG annotated stream;
-- people, vehicle, alert, FPS, uptime, source-health, face-worker, reconnect, and
-  recording status;
+- people, vehicle, alert, FPS, uptime, source-health, face-worker, reconnect,
+  recording, and server-alarm status;
 - bounded recent alert history and live per-client WebSocket delivery;
 - identity-first face source review when enabled;
 - liveness and readiness endpoints;
@@ -226,9 +272,10 @@ Camera index / file / RTSP(S) / HTTP(S)
                             ▼
                      AlertLogger → CSV
                             │
-                            └────────→ bounded AlertBroker
-                                            │
-                                            └→ per-client WebSocket queues
+                            ├────────→ bounded AlertBroker
+                            │                 │
+                            │                 └→ per-client WebSocket queues
+                            └────────→ bounded AlarmPlayer → server speakers
 
 Raw frame + tracked person bounds
                     │
@@ -268,6 +315,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | Face alignment | SCRFD five landmarks + OpenCV affine transform | Source pixels, but geometry is transformed |
 | Generative face preview | Vendored minimal GFPGAN clean inference architecture | Experimental; disabled by default |
 | ANPR | OpenCV Haar cascade + EasyOCR | CPU OCR; separate dependency lock |
+| Audible alerts | Generated WAV + `afplay`/`winsound`/`paplay`/`aplay` | Plays on the server device, not the browser |
 | Acceleration | ONNX Runtime CoreML/CUDA/CPU; PyTorch MPS/CUDA/CPU | Selected from available providers/devices |
 | Container deployment | Docker / Docker Compose | Base image includes core runtime only |
 | HTTPS | Uvicorn certificate/key or trusted reverse proxy | Required outside loopback development |
@@ -284,7 +332,9 @@ is vendored under `third_party/gfpgan_arch/`.
 | `python server.py` | Authenticated dashboard and long-running capture | Yes | Loops at EOF | Writes independently of clients; failures are isolated |
 
 Do not run `main.py` and `server.py` against the same physical camera at the
-same time. Many camera backends permit only one owner.
+same time. Many camera backends permit only one owner. Audible-alarm playback is
+currently wired to `server.py`, because it owns the long-running monitored
+service lifecycle.
 
 ## Requirements
 
@@ -439,6 +489,11 @@ current working directory.
 | `IBVAP_ALERT_STATE_TTL_SECONDS` | `300` | Cooldown-state retention |
 | `IBVAP_RECENT_ALERT_DISPLAY_SECONDS` | `8` | Annotated-frame banner retention |
 | `IBVAP_MAX_RECENT_ALERTS` | `20` | Maximum recent overlay labels |
+| `IBVAP_ENABLE_AUDIBLE_ALARMS` | `true` | Enable server-device alarm playback |
+| `IBVAP_AUDIBLE_ALARM_EVENTS` | `VIRTUAL_FENCE_INTRUSION,SUSPICIOUS_LOITERING` | Comma-separated supported event names |
+| `IBVAP_AUDIBLE_ALARM_VOLUME` | `0.75` | macOS playback multiplier, range 0–1 |
+| `IBVAP_AUDIBLE_ALARM_COOLDOWN_SECONDS` | `5` | Minimum interval per audible event type |
+| `IBVAP_AUDIBLE_ALARM_QUEUE_SIZE` | `8` | Maximum queued alarm patterns |
 | `IBVAP_SAVE_ANNOTATED_VIDEO` | `true` | Enable annotated MP4 output |
 | `IBVAP_ANNOTATED_VIDEO_PATH` | `output/annotated_output.mp4` | MP4 destination |
 | `IBVAP_ALERT_LOG_CSV` | `logs/alerts.csv` | Analytics event CSV |
@@ -705,6 +760,17 @@ the UTC values still identify the same instant.
 - Stop with Ctrl+C or SIGTERM before opening the final file so MP4 metadata is
   finalized.
 
+### Server alarm does not sound
+
+- Run `python -m scripts.test_alarm intrusion --volume 0.75` on the server host.
+- On macOS, verify the intended output under **System Settings → Sound** and
+  confirm the Mac is not muted.
+- Confirm `IBVAP_ENABLE_AUDIBLE_ALARMS=true` and inspect `alarm_status` through
+  the dashboard or `/api/stats`.
+- Alarms play from the server machine, not from a remote browser.
+- Headless service accounts and containers may not have access to a desktop
+  audio session.
+
 ### Face appears inaccurate
 
 Use **Detected source · no AI** as the authoritative crop. It contains the
@@ -754,7 +820,10 @@ explicitly for the deployment host.
 
 The base Docker image installs only `requirements.lock`. ANPR and face extras,
 face model mounts, hardware acceleration, production TLS, and external secret
-management require an explicitly reviewed image/deployment extension.
+management require an explicitly reviewed image/deployment extension. Container
+audio is not routed to the host by default, so Compose disables audible alarms
+unless explicitly overridden. Enabling them requires deliberately designed and
+tested secure host audio access.
 
 ## Testing, reproducibility, and repository hygiene
 
@@ -773,11 +842,12 @@ make check
 4. a Bandit static security scan; and
 5. vulnerability audits of runtime, ANPR, face, and development locks.
 
-The current suite contains 71 unit tests covering geometry, fence contact,
+The current suite contains 74 unit tests covering geometry, fence contact,
 loitering continuity, source-time behavior, alert cooldown/rotation, bounded
 broadcast, authentication, sessions, host/origin controls, rate limits,
-source parsing, server recording failure isolation, face quality gates, and
-source/review API access. The configured 85% coverage threshold and reported
+source parsing, server recording failure isolation, audible-alarm patterns and
+fan-out, face quality gates, and source/review API access. The configured 85%
+coverage threshold and reported
 coverage apply to `utils` and `security`; they are not a claim of whole-system
 or ML-model coverage.
 
@@ -878,6 +948,9 @@ independent penetration test.
   an independently governed system when required.
 - Health endpoints report process/capture readiness, not end-to-end analytics
   accuracy or camera-scene correctness.
+- Audible alarms depend on the host audio player, active output device, volume,
+  and physical audibility. They are not a substitute for a supervised alarm
+  console, redundant notification path, or life-safety signalling system.
 
 ### Security and account model
 

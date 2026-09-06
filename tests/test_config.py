@@ -3,9 +3,14 @@ import pytest
 import config
 
 
-def test_generative_features_are_opt_in_by_default():
+def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     assert config._env_bool("A_VARIABLE_THAT_IS_NOT_SET", False) is False
     assert config.ENABLE_GFPGAN_RESTORATION is False
+    assert config.ENABLE_AUDIBLE_ALARMS is True
+    assert config.AUDIBLE_ALARM_EVENTS == (
+        "VIRTUAL_FENCE_INTRUSION",
+        "SUSPICIOUS_LOITERING",
+    )
 
 
 def test_video_source_parser_handles_camera_url_index_and_relative_file():
