@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from security import (
     AuditLogger,
@@ -79,6 +80,10 @@ def test_audit_logger_writes_structured_record_without_secret(tmp_path):
     assert record["success"] is False
     assert record["details"] == {"x": 1}
     assert "password" not in record
+    local_time = datetime.fromisoformat(record["timestamp_local"])
+    utc_time = datetime.fromisoformat(record["timestamp_utc"])
+    assert local_time.utcoffset() is not None
+    assert local_time.timestamp() == utc_time.timestamp()
 
     logger.log("login", success=True, actor="operator", details={"padding": "x" * 200})
     assert (path.parent / "events.jsonl.1").exists()

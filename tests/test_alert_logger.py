@@ -1,4 +1,5 @@
 import csv
+from datetime import datetime
 
 import pytest
 
@@ -23,7 +24,12 @@ def test_alert_logger_writes_header_and_uses_source_time_cooldown(tmp_path):
     assert rows[0]["source_time_seconds"] == "0.0"
     assert rows[1]["frame_number"] == "3"
     assert len(received) == 2
-    assert received[0]["timestamp"].endswith("+00:00")
+    assert received[0]["timestamp"] == received[0]["timestamp_utc"]
+    assert received[0]["timestamp_utc"].endswith("+00:00")
+    local_time = datetime.fromisoformat(rows[0]["timestamp_local"])
+    utc_time = datetime.fromisoformat(rows[0]["timestamp_utc"])
+    assert local_time.utcoffset() is not None
+    assert local_time.timestamp() == utc_time.timestamp()
 
 
 def test_alert_logger_reset_and_backward_time_allow_new_event(tmp_path):
@@ -54,7 +60,22 @@ def test_alert_log_rotates_at_size_limit(tmp_path):
     logger.close()
     assert path.exists()
     assert (tmp_path / "alerts.csv.1").exists()
-    assert path.read_text(encoding="utf-8").startswith("timestamp_utc,")
+    assert path.read_text(encoding="utf-8").startswith("timestamp_local,timestamp_utc,")
+
+
+def test_alert_logger_preserves_old_schema_as_rotated_backup(tmp_path):
+    path = tmp_path / "alerts.csv"
+    old_contents = (
+        "timestamp_utc,source_time_seconds,alert_type,track_id,details,frame_number\n"
+        "2026-01-01T00:00:00+00:00,0.0,A,1,old,1\n"
+    )
+    path.write_text(old_contents, encoding="utf-8")
+
+    logger = AlertLogger(str(path), backup_count=2)
+    logger.close()
+
+    assert (tmp_path / "alerts.csv.1").read_text(encoding="utf-8") == old_contents
+    assert path.read_text(encoding="utf-8").startswith("timestamp_local,timestamp_utc,")
 
 
 def test_closed_logger_rejects_writes(tmp_path):

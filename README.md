@@ -22,7 +22,7 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 | Virtual fence | Visible-box contact plus centroid segment crossing | Enabled |
 | Loitering | Continuous person observation with movement and gap limits | Enabled |
 | Night movement | Smoothed central-ROI brightness with hysteresis | Enabled |
-| Alert persistence | Rotating CSV with UTC and source/media timestamps | Enabled |
+| Alert persistence | Rotating CSV with local-system, UTC, and source/media timestamps | Enabled |
 | Security audit log | Rotating structured JSONL for dashboard security events | Server mode |
 | Dashboard | FastAPI, authenticated MJPEG, statistics, and WebSocket alerts | Server mode |
 | Annotated MP4 | `mp4v` recording from both `main.py` and `server.py` | Enabled |
@@ -104,7 +104,8 @@ Alert behavior includes:
 
 - synchronous CSV persistence before an alert callback is invoked;
 - immediate file flush after each accepted alert;
-- UTC wall-clock timestamps and source/media-time seconds;
+- server-system local timestamps with explicit UTC offsets, canonical UTC
+  timestamps, and source/media-time seconds;
 - cooldowns keyed by alert type and track ID;
 - bounded cooldown-state retention;
 - bounded recent alert labels on video overlays;
@@ -526,7 +527,9 @@ protected service definition instead of adding them to Git. A persistent session
 secret also prevents all sessions from changing whenever the process restarts.
 
 `localhost`, `127.0.0.1`, and `::1` are treated as equivalent local origins when
-the effective port matches. Other hosts and origins remain restricted.
+the effective port matches. Other hosts and origins remain restricted. The
+header clock and alert times are rendered in the browser's system timezone;
+alert instants arrive as UTC and are converted with the browser's local clock.
 
 ### Dashboard authentication and security controls
 
@@ -600,8 +603,15 @@ It is created with a header when `VideoPipeline` successfully initializes. Data
 rows appear only when an alert occurs. Columns are:
 
 ```text
-timestamp_utc,source_time_seconds,alert_type,track_id,details,frame_number
+timestamp_local,timestamp_utc,source_time_seconds,alert_type,track_id,details,frame_number
 ```
+
+`timestamp_local` follows the server host's configured system timezone and
+always includes its UTC offset. `timestamp_utc` records the same instant in UTC.
+`source_time_seconds` remains the media timeline for files or a monotonic clock
+for live analytics; it is not a wall-clock value. When upgrading an existing
+installation, a CSV with the older header is preserved as `alerts.csv.1` and a
+new file is opened with the current schema.
 
 To place it beside the MP4:
 
@@ -618,8 +628,10 @@ logs/audit.jsonl
 ```
 
 It records login success/failure, rejected origins, rate limits, logout, MJPEG
-connections, and WebSocket connection lifecycle as structured JSON lines.
-`audit.jsonl` does not replace `alerts.csv`: the former is a security access log;
+connections, and WebSocket connection lifecycle as structured JSON lines. Each
+record contains `timestamp_local` with the server's UTC offset and
+`timestamp_utc` for canonical correlation. `audit.jsonl` does not replace
+`alerts.csv`: the former is a security access log;
 the latter contains video analytics events.
 
 Both logs rotate by size with numbered backups. They are local operational logs,
@@ -674,6 +686,15 @@ resolved paths with:
 ```bash
 .venv/bin/python -c 'import config; print(config.ALERT_LOG_CSV); print(config.AUDIT_LOG_JSONL)'
 ```
+
+### Dashboard or log time looks incorrect
+
+The dashboard converts each UTC event instant into the browser's system
+timezone. Confirm the browser/OS date, time, and timezone settings. Logs include
+both `timestamp_local` (server system timezone with offset) and `timestamp_utc`.
+If the browser runs on a different machine or timezone than the server, its
+displayed local time can intentionally differ from the server-local log column;
+the UTC values still identify the same instant.
 
 ### Annotated MP4 appears empty or is missing
 
@@ -752,7 +773,7 @@ make check
 4. a Bandit static security scan; and
 5. vulnerability audits of runtime, ANPR, face, and development locks.
 
-The current suite contains 68 unit tests covering geometry, fence contact,
+The current suite contains 71 unit tests covering geometry, fence contact,
 loitering continuity, source-time behavior, alert cooldown/rotation, bounded
 broadcast, authentication, sessions, host/origin controls, rate limits,
 source parsing, server recording failure isolation, face quality gates, and

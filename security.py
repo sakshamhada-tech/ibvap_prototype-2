@@ -11,10 +11,10 @@ import os
 import threading
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from utils.log_rotation import exceeds_limit, rotate_file
+from utils.timestamps import current_wall_times
 
 
 class AuthManager:
@@ -214,8 +214,10 @@ class AuditLogger:
         actor: str | None = None,
         details: dict | None = None,
     ) -> None:
+        timestamp_local, timestamp_utc = current_wall_times()
         record = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "timestamp_local": timestamp_local,
+            "timestamp_utc": timestamp_utc,
             "event": event,
             "success": success,
             "client_ip": client_ip,
