@@ -1,8 +1,8 @@
-"""Failure-isolated SCRFD detection and GFPGAN restoration worker.
+"""Failure-isolated SCRFD source extraction and optional GFPGAN preview.
 
-The worker never mutates the source video frame. It emits JPEG thumbnails for
-an authenticated dashboard panel and drops work when restoration cannot keep up
-with capture.
+The worker never mutates the source video frame. It emits camera-pixel and
+aligned JPEG crops for an authenticated dashboard panel. Generative restoration
+is opt-in, bounded, and dropped when work cannot keep up with capture.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class _FaceJob:
 
 
 class FaceEnhancementService:
-    """Run SCRFD and GFPGAN off the capture thread with a one-job queue."""
+    """Run SCRFD extraction and optional GFPGAN off-thread with a one-job queue."""
 
     def __init__(
         self,
@@ -49,6 +49,7 @@ class FaceEnhancementService:
         scrfd_model_path: str,
         gfpgan_model_path: str,
         gfpgan_model_sha256: str,
+        enable_restoration: bool,
         confidence_threshold: float,
         input_size: int,
         min_face_size_px: int,
@@ -65,6 +66,7 @@ class FaceEnhancementService:
         self.scrfd_model_path = scrfd_model_path
         self.gfpgan_model_path = gfpgan_model_path
         self.gfpgan_model_sha256 = gfpgan_model_sha256
+        self.enable_restoration = enable_restoration
         self.confidence_threshold = confidence_threshold
         self.input_size = input_size
         self.min_face_size_px = min_face_size_px
@@ -198,26 +200,21 @@ class FaceEnhancementService:
 
     def _load_models(self) -> None:
         scrfd_path = Path(self.scrfd_model_path)
-        gfpgan_path = Path(self.gfpgan_model_path)
-        if not scrfd_path.is_file() or not gfpgan_path.is_file():
+        if not scrfd_path.is_file():
             raise FaceModelsUnavailable(
                 "run scripts/download_face_models.py after reviewing the model licenses"
             )
-        _verify_hash(gfpgan_path, self.gfpgan_model_sha256)
         _verify_sidecar_hash(scrfd_path)
 
         try:
             import cv2
             import numpy as np
             import onnxruntime
-            import torch
             from insightface.model_zoo import get_model
         except ImportError as exc:
             raise FaceModelsUnavailable(
                 "install requirements-face.lock in the active environment"
             ) from exc
-
-        from third_party.gfpgan_arch import GFPGANv1Clean
 
         available_providers = set(onnxruntime.get_available_providers())
         providers = [
@@ -239,6 +236,24 @@ class FaceEnhancementService:
             input_size=(self.input_size, self.input_size),
             det_thresh=self.confidence_threshold,
         )
+
+        self._cv2 = cv2
+        self._np = np
+        if not self.enable_restoration:
+            LOGGER.info("face extraction ready: SCRFD providers=%s; GFPGAN disabled", providers)
+            return
+
+        gfpgan_path = Path(self.gfpgan_model_path)
+        if not gfpgan_path.is_file():
+            raise FaceModelsUnavailable(
+                "GFPGAN preview enabled but its reviewed model file is unavailable"
+            )
+        _verify_hash(gfpgan_path, self.gfpgan_model_sha256)
+        try:
+            import torch
+        except ImportError as exc:
+            raise FaceModelsUnavailable("GFPGAN preview requires requirements-face.lock") from exc
+        from third_party.gfpgan_arch import GFPGANv1Clean
 
         device = _select_torch_device(torch, self.device_setting)
         restorer = GFPGANv1Clean(
@@ -264,13 +279,11 @@ class FaceEnhancementService:
         restorer.load_state_dict(parameters, strict=True)
         restorer.eval().to(device)
 
-        self._cv2 = cv2
-        self._np = np
         self._torch = torch
         self._gfpgan = restorer
         self._device = device
         LOGGER.info(
-            "face enhancement ready: SCRFD providers=%s GFPGAN device=%s",
+            "face extraction ready: SCRFD providers=%s; experimental GFPGAN device=%s",
             providers,
             device,
         )
@@ -317,50 +330,70 @@ class FaceEnhancementService:
                 face = dict(cached[1])
             else:
                 try:
-                    aligned = _align_face(job.frame, keypoints, self._cv2, self._np)
+                    source_crop = _extract_source_face(job.frame, face_box)
+                    source_jpeg = self._encode_jpeg(source_crop)
+                    sharpness = _source_sharpness(job.frame, face_box, self._cv2)
                 except Exception:
-                    LOGGER.exception("could not align face for track %s", track_id)
+                    LOGGER.exception("could not extract source face for track %s", track_id)
                     continue
-                source_jpeg = self._encode_jpeg(aligned)
                 if source_jpeg is None:
                     continue
 
-                sharpness = _source_sharpness(job.frame, face_box, self._cv2)
-                reason = _restoration_rejection_reason(
-                    source_size,
-                    sharpness,
-                    self.restoration_min_face_size_px,
-                    self.restoration_min_sharpness,
-                )
+                aligned = None
+                aligned_jpeg = None
                 review_jpeg = None
-                if reason is None:
-                    try:
-                        restored = self._restore(aligned)
-                        review = self._cv2.addWeighted(
-                            aligned,
-                            1.0 - self.restoration_blend_weight,
-                            restored,
-                            self.restoration_blend_weight,
-                            0.0,
-                        )
-                        review_jpeg = self._encode_jpeg(review)
-                        if review_jpeg is None:
-                            reason = "restoration_encoding_failed"
-                    except Exception:
-                        LOGGER.exception("GFPGAN restoration failed for track %s", track_id)
-                        reason = "restoration_failed"
+                reason = None
+                restoration_status = "disabled"
+                try:
+                    aligned = _align_face(job.frame, keypoints, self._cv2, self._np)
+                    aligned_jpeg = self._encode_jpeg(aligned)
+                    if aligned_jpeg is None:
+                        reason = "alignment_encoding_failed"
+                except Exception:
+                    LOGGER.exception("could not align face for track %s", track_id)
+                    reason = "alignment_failed"
+
+                if self.enable_restoration and aligned is not None and aligned_jpeg is not None:
+                    reason = _restoration_rejection_reason(
+                        source_size,
+                        sharpness,
+                        self.restoration_min_face_size_px,
+                        self.restoration_min_sharpness,
+                    )
+                    restoration_status = "rejected" if reason is not None else "blended"
+                    if reason is None:
+                        try:
+                            restored = self._restore(aligned)
+                            review = self._cv2.addWeighted(
+                                aligned,
+                                1.0 - self.restoration_blend_weight,
+                                restored,
+                                self.restoration_blend_weight,
+                                0.0,
+                            )
+                            review_jpeg = self._encode_jpeg(review)
+                            if review_jpeg is None:
+                                reason = "restoration_encoding_failed"
+                                restoration_status = "rejected"
+                        except Exception:
+                            LOGGER.exception("GFPGAN restoration failed for track %s", track_id)
+                            reason = "restoration_failed"
+                            restoration_status = "rejected"
+                elif reason is not None:
+                    restoration_status = "rejected"
 
                 face = {
                     "track_id": track_id,
                     "confidence": round(confidence, 3),
                     "source_face_size_px": round(source_size, 1),
                     "source_sharpness": round(sharpness, 1),
-                    "restoration_status": "blended" if review_jpeg is not None else "rejected",
+                    "restoration_status": restoration_status,
                     "quality_reason": reason,
                     "blend_weight": (
                         self.restoration_blend_weight if review_jpeg is not None else None
                     ),
                     "source_jpeg": source_jpeg,
+                    "aligned_jpeg": aligned_jpeg,
                     "jpeg": review_jpeg,
                 }
                 self._cache[cache_key] = (now, face)
@@ -385,7 +418,11 @@ class FaceEnhancementService:
         tensor = self._torch.from_numpy(rgb.transpose(2, 0, 1)).float().div(255.0)
         tensor = tensor.sub(0.5).div(0.5).unsqueeze(0).to(self._device)
         with self._torch.no_grad():
-            output = self._gfpgan(tensor, return_rgb=False)[0]
+            output = self._gfpgan(
+                tensor,
+                return_rgb=False,
+                randomize_noise=False,
+            )[0]
         output = output.squeeze(0).detach().float().cpu().clamp_(-1, 1)
         image = output.add(1).div(2).mul(255).round().byte().numpy().transpose(1, 2, 0)
         return self._np.ascontiguousarray(image[:, :, ::-1])
@@ -455,6 +492,24 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _extract_source_face(
+    frame,
+    face_box: tuple[float, float, float, float],
+    padding_ratio: float = 0.15,
+):
+    """Copy detected camera pixels with modest context and no generative processing."""
+    height, width = frame.shape[:2]
+    face_width = max(1.0, face_box[2] - face_box[0])
+    face_height = max(1.0, face_box[3] - face_box[1])
+    padding_x = face_width * padding_ratio
+    padding_y = face_height * padding_ratio
+    left = max(0, min(width, int(face_box[0] - padding_x)))
+    top = max(0, min(height, int(face_box[1] - padding_y)))
+    right = max(0, min(width, int(face_box[2] + padding_x + 0.999)))
+    bottom = max(0, min(height, int(face_box[3] + padding_y + 0.999)))
+    return frame[top:bottom, left:right].copy()
 
 
 def _source_sharpness(frame, face_box: tuple[float, float, float, float], cv2) -> float:

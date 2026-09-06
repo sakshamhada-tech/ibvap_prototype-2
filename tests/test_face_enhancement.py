@@ -17,6 +17,7 @@ def make_service(tmp_path, callback):
         scrfd_model_path=str(tmp_path / "scrfd.onnx"),
         gfpgan_model_path=str(tmp_path / "gfpgan.pth"),
         gfpgan_model_sha256="0" * 64,
+        enable_restoration=False,
         confidence_threshold=0.6,
         input_size=640,
         min_face_size_px=32,
@@ -100,8 +101,11 @@ def test_model_checksum_sidecar_is_enforced(tmp_path):
 
 def _prepare_process_service(monkeypatch, tmp_path, detection, *, sharpness):
     service = make_service(tmp_path, lambda _snapshot: None)
+    service.enable_restoration = True
     service._scrfd = SimpleNamespace(detect=lambda *_args, **_kwargs: ([detection], [[(0, 0)] * 5]))
+    source_crop = object()
     aligned = object()
+    monkeypatch.setattr(face_enhancement, "_extract_source_face", lambda *_args: source_crop)
     monkeypatch.setattr(face_enhancement, "_align_face", lambda *_args: aligned)
     monkeypatch.setattr(face_enhancement, "_source_sharpness", lambda *_args: sharpness)
     service._cv2 = SimpleNamespace(
@@ -136,9 +140,34 @@ def test_tiny_source_face_is_source_only_and_never_restored(monkeypatch, tmp_pat
     faces = service._process(job)
 
     assert faces[0]["source_jpeg"] == b"jpeg"
+    assert faces[0]["aligned_jpeg"] == b"jpeg"
     assert faces[0]["jpeg"] is None
     assert faces[0]["restoration_status"] == "rejected"
     assert faces[0]["quality_reason"] == "source_face_too_small"
+
+
+def test_identity_first_mode_extracts_source_without_running_gfpgan(monkeypatch, tmp_path):
+    service = _prepare_process_service(
+        monkeypatch,
+        tmp_path,
+        [10, 10, 110, 110, 0.95],
+        sharpness=100,
+    )
+    service.enable_restoration = False
+    monkeypatch.setattr(
+        service,
+        "_restore",
+        lambda _aligned: (_ for _ in ()).throw(AssertionError("must not restore")),
+    )
+    job = SimpleNamespace(frame=object(), people=((8, (0, 0, 150, 150)),), generation=0)
+
+    faces = service._process(job)
+
+    assert faces[0]["source_jpeg"] == b"jpeg"
+    assert faces[0]["aligned_jpeg"] == b"jpeg"
+    assert faces[0]["jpeg"] is None
+    assert faces[0]["restoration_status"] == "disabled"
+    assert faces[0]["quality_reason"] is None
 
 
 def test_restoration_quality_gate_rejects_blurry_sources():
@@ -162,6 +191,7 @@ def test_adequate_source_face_uses_conservative_identity_blend(monkeypatch, tmp_
     faces = service._process(job)
 
     assert faces[0]["source_jpeg"] == b"jpeg"
+    assert faces[0]["aligned_jpeg"] == b"jpeg"
     assert faces[0]["jpeg"] == b"jpeg"
     assert faces[0]["restoration_status"] == "blended"
     assert faces[0]["quality_reason"] is None

@@ -108,9 +108,9 @@ function renderFaces(snapshot) {
     const empty = document.createElement("p");
     empty.className = "face-empty";
     if (snapshot.status === "disabled") {
-      empty.textContent = "Face enhancement is disabled. Enable SCRFD + GFPGAN to use this panel.";
+      empty.textContent = "Face extraction is disabled. Enable SCRFD to use this panel.";
     } else if (snapshot.status === "loading") {
-      empty.textContent = "Loading SCRFD and GFPGAN models…";
+      empty.textContent = "Loading SCRFD face detector…";
     } else if (snapshot.status === "unavailable" || snapshot.status === "error") {
       empty.textContent = snapshot.message || "Face enhancement is unavailable.";
     } else {
@@ -121,10 +121,12 @@ function renderFaces(snapshot) {
   }
 
   const rejectionLabels = {
-    source_face_too_small: "REJECTED · source face too small",
-    source_face_too_blurry: "REJECTED · source face too blurred",
-    restoration_failed: "SOURCE ONLY · restoration failed",
-    restoration_encoding_failed: "SOURCE ONLY · restoration encoding failed",
+    source_face_too_small: "GFPGAN REJECTED · source face too small",
+    source_face_too_blurry: "GFPGAN REJECTED · source face too blurred",
+    alignment_failed: "ALIGNMENT REJECTED · landmarks invalid",
+    alignment_encoding_failed: "ALIGNMENT REJECTED · encoding failed",
+    restoration_failed: "SOURCE ONLY · GFPGAN failed",
+    restoration_encoding_failed: "SOURCE ONLY · GFPGAN encoding failed",
   };
 
   const makeVariant = (url, label, alt) => {
@@ -147,17 +149,26 @@ function renderFaces(snapshot) {
     comparison.append(
       makeVariant(
         face.source_image_url,
-        "ALIGNED SOURCE",
-        `Aligned source face for track ${face.track_id}`,
+        "DETECTED SOURCE · NO AI",
+        `Original detected face pixels for track ${face.track_id}`,
       ),
     );
+    if (face.aligned_image_url) {
+      comparison.append(
+        makeVariant(
+          face.aligned_image_url,
+          "LANDMARK ALIGNED · NO AI",
+          `Landmark-aligned source face for track ${face.track_id}`,
+        ),
+      );
+    }
 
     if (face.review_image_url) {
       const blendWeight = Number(face.blend_weight);
       const blendLabel =
         face.blend_weight !== null && Number.isFinite(blendWeight)
-          ? `CONSERVATIVE AI BLEND · ${Math.round(blendWeight * 100)}%`
-          : "AI REVIEW";
+          ? `EXPERIMENTAL GFPGAN · ${Math.round(blendWeight * 100)}%`
+          : "EXPERIMENTAL GFPGAN";
       comparison.append(
         makeVariant(
           face.review_image_url,
@@ -165,10 +176,10 @@ function renderFaces(snapshot) {
           `Conservative AI face blend for track ${face.track_id}`,
         ),
       );
-    } else {
+    } else if (face.restoration_status === "rejected") {
       const rejected = document.createElement("div");
       rejected.className = "face-rejected";
-      rejected.textContent = rejectionLabels[face.quality_reason] || "SOURCE ONLY · restoration rejected";
+      rejected.textContent = rejectionLabels[face.quality_reason] || "SOURCE ONLY · GFPGAN rejected";
       comparison.append(rejected);
     }
 

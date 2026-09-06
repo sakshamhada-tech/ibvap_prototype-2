@@ -120,6 +120,7 @@ def test_enhanced_face_panel_api_is_authenticated(client):
                     "track_id": 7,
                     "confidence": 0.93,
                     "source_jpeg": b"source-jpeg",
+                    "aligned_jpeg": b"aligned-jpeg",
                     "jpeg": b"review-jpeg",
                     "restoration_status": "blended",
                     "quality_reason": None,
@@ -144,13 +145,18 @@ def test_enhanced_face_panel_api_is_authenticated(client):
     assert payload["faces"][0]["track_id"] == 7
     assert "not forensic evidence" in payload["disclaimer"]
     source = client.get(payload["faces"][0]["source_image_url"])
+    aligned = client.get(payload["faces"][0]["aligned_image_url"])
     review = client.get(payload["faces"][0]["review_image_url"])
     assert source.content == b"source-jpeg"
+    assert aligned.content == b"aligned-jpeg"
     assert review.status_code == 200
     assert review.headers["content-type"] == "image/jpeg"
     assert review.content == b"review-jpeg"
+    assert payload["faces"][1]["aligned_image_url"] is None
     assert payload["faces"][1]["review_image_url"] is None
     assert client.get(payload["faces"][1]["source_image_url"]).content == b"rejected-source"
+    assert client.get("/api/faces/1").content == b"rejected-source"
+    assert client.get("/api/faces/1?variant=review").status_code == 404
     assert client.get("/api/faces/0?variant=invalid").status_code == 404
     assert client.get("/api/faces/99").status_code == 404
 

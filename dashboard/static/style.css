@@ -256,7 +256,7 @@ body {
 
 .face-comparison {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
   gap: 1px;
   background: var(--hairline);
 }
@@ -270,7 +270,8 @@ body {
 .face-variant img {
   width: 100%;
   aspect-ratio: 1;
-  object-fit: cover;
+  object-fit: contain;
+  background: #000;
   display: block;
 }
 

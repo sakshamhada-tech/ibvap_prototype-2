@@ -126,6 +126,7 @@ class VideoPipeline:
                 scrfd_model_path=config.SCRFD_MODEL_PATH,
                 gfpgan_model_path=config.GFPGAN_MODEL_PATH,
                 gfpgan_model_sha256=config.GFPGAN_MODEL_SHA256,
+                enable_restoration=config.ENABLE_GFPGAN_RESTORATION,
                 confidence_threshold=config.SCRFD_CONFIDENCE_THRESHOLD,
                 input_size=config.SCRFD_INPUT_SIZE,
                 min_face_size_px=config.SCRFD_MIN_FACE_SIZE_PX,

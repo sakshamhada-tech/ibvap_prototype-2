@@ -121,9 +121,12 @@ if NIGHT_BRIGHTNESS_SMOOTHING_ALPHA > 1.0:
 NIGHT_BRIGHTNESS_ROI_MARGIN = _env_float("IBVAP_NIGHT_BRIGHTNESS_ROI_MARGIN", 0.05, minimum=0.0)
 if NIGHT_BRIGHTNESS_ROI_MARGIN >= 0.5:
     raise ValueError("IBVAP_NIGHT_BRIGHTNESS_ROI_MARGIN must be < 0.5")
-# SCRFD + GFPGAN is opt-in because restoration is compute-heavy and requires
-# separately licensed model weights. It never modifies the primary video frame.
+# SCRFD source-face review is opt-in because it requires separately licensed
+# model weights. It never modifies the primary video frame.
 ENABLE_FACE_ENHANCEMENT = _env_bool("IBVAP_ENABLE_FACE_ENHANCEMENT", False)
+# Accurate face review uses SCRFD source crops. GFPGAN is a separate,
+# generative preview and is deliberately off unless an operator opts in.
+ENABLE_GFPGAN_RESTORATION = _env_bool("IBVAP_ENABLE_GFPGAN_RESTORATION", False)
 FACE_ENHANCEMENT_INTERVAL_FRAMES = _env_int("IBVAP_FACE_ENHANCEMENT_INTERVAL_FRAMES", 15, minimum=1)
 FACE_ENHANCEMENT_MAX_FACES = _env_int("IBVAP_FACE_ENHANCEMENT_MAX_FACES", 4, minimum=1)
 FACE_ENHANCEMENT_REFRESH_SECONDS = _env_float(
@@ -142,11 +145,11 @@ SCRFD_INPUT_SIZE = _env_int("IBVAP_SCRFD_INPUT_SIZE", 640, minimum=128)
 if SCRFD_INPUT_SIZE % 32:
     raise ValueError("IBVAP_SCRFD_INPUT_SIZE must be divisible by 32")
 SCRFD_MIN_FACE_SIZE_PX = _env_int("IBVAP_SCRFD_MIN_FACE_SIZE_PX", 32, minimum=1)
-GFPGAN_MIN_SOURCE_FACE_SIZE_PX = _env_int("IBVAP_GFPGAN_MIN_SOURCE_FACE_SIZE_PX", 80, minimum=32)
+GFPGAN_MIN_SOURCE_FACE_SIZE_PX = _env_int("IBVAP_GFPGAN_MIN_SOURCE_FACE_SIZE_PX", 96, minimum=32)
 if GFPGAN_MIN_SOURCE_FACE_SIZE_PX < SCRFD_MIN_FACE_SIZE_PX:
     raise ValueError("IBVAP_GFPGAN_MIN_SOURCE_FACE_SIZE_PX must be >= IBVAP_SCRFD_MIN_FACE_SIZE_PX")
-GFPGAN_MIN_SOURCE_SHARPNESS = _env_float("IBVAP_GFPGAN_MIN_SOURCE_SHARPNESS", 30.0, minimum=0.0)
-GFPGAN_BLEND_WEIGHT = _env_float("IBVAP_GFPGAN_BLEND_WEIGHT", 0.25, minimum=0.0)
+GFPGAN_MIN_SOURCE_SHARPNESS = _env_float("IBVAP_GFPGAN_MIN_SOURCE_SHARPNESS", 50.0, minimum=0.0)
+GFPGAN_BLEND_WEIGHT = _env_float("IBVAP_GFPGAN_BLEND_WEIGHT", 0.10, minimum=0.0)
 if GFPGAN_BLEND_WEIGHT > 0.5:
     raise ValueError("IBVAP_GFPGAN_BLEND_WEIGHT must be <= 0.5")
 SCRFD_MODEL_PATH = _resolve_path(os.getenv("IBVAP_SCRFD_MODEL_PATH", "models/scrfd_2.5g.onnx"))

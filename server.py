@@ -315,13 +315,16 @@ class CaptureService:
         metadata = []
         for face in snapshot.get("faces", ()):
             source = face.get("source_jpeg")
+            aligned = face.get("aligned_jpeg")
             review = face.get("jpeg")
             # Accept older worker snapshots during a rolling process update.
             if not isinstance(source, bytes):
-                source = review
+                source = aligned if isinstance(aligned, bytes) else review
             if not isinstance(source, bytes):
                 continue
             variants = {"source": source}
+            if isinstance(aligned, bytes):
+                variants["aligned"] = aligned
             if isinstance(review, bytes):
                 variants["review"] = review
             images.append(variants)
@@ -337,6 +340,7 @@ class CaptureService:
                     ),
                     "quality_reason": face.get("quality_reason"),
                     "blend_weight": face.get("blend_weight"),
+                    "has_aligned": "aligned" in variants,
                     "has_review": "review" in variants,
                 }
             )
@@ -364,6 +368,11 @@ class CaptureService:
             faces = []
             for index, metadata in enumerate(self._face_metadata):
                 source_url = f"/api/faces/{index}?version={version}&variant=source"
+                aligned_url = (
+                    f"/api/faces/{index}?version={version}&variant=aligned"
+                    if metadata["has_aligned"]
+                    else None
+                )
                 review_url = (
                     f"/api/faces/{index}?version={version}&variant=review"
                     if metadata["has_review"]
@@ -372,8 +381,9 @@ class CaptureService:
                 faces.append(
                     {
                         **metadata,
-                        "image_url": review_url or source_url,
+                        "image_url": source_url,
                         "source_image_url": source_url,
+                        "aligned_image_url": aligned_url,
                         "review_image_url": review_url,
                     }
                 )
@@ -385,8 +395,8 @@ class CaptureService:
                 "version": version,
                 "faces": faces,
                 "disclaimer": (
-                    "Compare the aligned source with the conservative AI blend. "
-                    "GFPGAN can invent details and is not forensic evidence."
+                    "Detected source contains camera pixels only. Alignment changes geometry; "
+                    "optional GFPGAN previews can invent details and are not forensic evidence."
                 ),
             }
 
@@ -394,16 +404,24 @@ class CaptureService:
         self,
         index: int,
         version: int | None = None,
-        variant: str = "review",
+        variant: str = "source",
     ) -> bytes | None:
         with self._faces_lock:
             images = (
                 self._face_images if version is None else self._face_image_versions.get(version, ())
             )
-            if index < 0 or index >= len(images) or variant not in {"source", "review"}:
+            if (
+                index < 0
+                or index >= len(images)
+                or variant
+                not in {
+                    "source",
+                    "aligned",
+                    "review",
+                }
+            ):
                 return None
-            variants = images[index]
-            return variants.get(variant) or variants.get("source")
+            return images[index].get(variant)
 
     def health(self) -> dict:
         now = time.monotonic()
@@ -674,7 +692,7 @@ def api_face_image(
     index: int,
     request: Request,
     version: int | None = None,
-    variant: str = "review",
+    variant: str = "source",
 ):
     if not _operator(request):
         return JSONResponse({"detail": "authentication required"}, status_code=401)
