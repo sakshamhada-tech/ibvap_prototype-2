@@ -1,8 +1,8 @@
-"""Failure-isolated SCRFD detection and GFPGAN restoration worker.
+"""Failure-isolated SCRFD source extraction and optional GFPGAN preview.
 
-The worker never mutates the source video frame. It emits JPEG thumbnails for
-an authenticated dashboard panel and drops work when restoration cannot keep up
-with capture.
+The worker never mutates the source video frame. It emits camera-pixel and
+aligned JPEG crops for an authenticated dashboard panel. Generative restoration
+is opt-in, bounded, and dropped when work cannot keep up with capture.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class _FaceJob:
 
 
 class FaceEnhancementService:
-    """Run SCRFD and GFPGAN off the capture thread with a one-job queue."""
+    """Run SCRFD extraction and optional GFPGAN off-thread with a one-job queue."""
 
     def __init__(
         self,
@@ -49,9 +49,13 @@ class FaceEnhancementService:
         scrfd_model_path: str,
         gfpgan_model_path: str,
         gfpgan_model_sha256: str,
+        enable_restoration: bool,
         confidence_threshold: float,
         input_size: int,
         min_face_size_px: int,
+        restoration_min_face_size_px: int,
+        restoration_min_sharpness: float,
+        restoration_blend_weight: float,
         max_faces: int,
         refresh_seconds: float,
         cache_ttl_seconds: float,
@@ -62,9 +66,13 @@ class FaceEnhancementService:
         self.scrfd_model_path = scrfd_model_path
         self.gfpgan_model_path = gfpgan_model_path
         self.gfpgan_model_sha256 = gfpgan_model_sha256
+        self.enable_restoration = enable_restoration
         self.confidence_threshold = confidence_threshold
         self.input_size = input_size
         self.min_face_size_px = min_face_size_px
+        self.restoration_min_face_size_px = restoration_min_face_size_px
+        self.restoration_min_sharpness = restoration_min_sharpness
+        self.restoration_blend_weight = restoration_blend_weight
         self.max_faces = max_faces
         self.refresh_seconds = refresh_seconds
         self.cache_ttl_seconds = cache_ttl_seconds
@@ -79,7 +87,7 @@ class FaceEnhancementService:
         self._status = "loading"
         self._generation_lock = threading.Lock()
         self._generation = 0
-        self._cache: dict[tuple[int, int], tuple[float, bytes, float]] = {}
+        self._cache: dict[tuple[int, int], tuple[float, dict]] = {}
         self._scrfd = None
         self._gfpgan = None
         self._torch = None
@@ -192,26 +200,21 @@ class FaceEnhancementService:
 
     def _load_models(self) -> None:
         scrfd_path = Path(self.scrfd_model_path)
-        gfpgan_path = Path(self.gfpgan_model_path)
-        if not scrfd_path.is_file() or not gfpgan_path.is_file():
+        if not scrfd_path.is_file():
             raise FaceModelsUnavailable(
                 "run scripts/download_face_models.py after reviewing the model licenses"
             )
-        _verify_hash(gfpgan_path, self.gfpgan_model_sha256)
         _verify_sidecar_hash(scrfd_path)
 
         try:
             import cv2
             import numpy as np
             import onnxruntime
-            import torch
             from insightface.model_zoo import get_model
         except ImportError as exc:
             raise FaceModelsUnavailable(
                 "install requirements-face.lock in the active environment"
             ) from exc
-
-        from third_party.gfpgan_arch import GFPGANv1Clean
 
         available_providers = set(onnxruntime.get_available_providers())
         providers = [
@@ -233,6 +236,24 @@ class FaceEnhancementService:
             input_size=(self.input_size, self.input_size),
             det_thresh=self.confidence_threshold,
         )
+
+        self._cv2 = cv2
+        self._np = np
+        if not self.enable_restoration:
+            LOGGER.info("face extraction ready: SCRFD providers=%s; GFPGAN disabled", providers)
+            return
+
+        gfpgan_path = Path(self.gfpgan_model_path)
+        if not gfpgan_path.is_file():
+            raise FaceModelsUnavailable(
+                "GFPGAN preview enabled but its reviewed model file is unavailable"
+            )
+        _verify_hash(gfpgan_path, self.gfpgan_model_sha256)
+        try:
+            import torch
+        except ImportError as exc:
+            raise FaceModelsUnavailable("GFPGAN preview requires requirements-face.lock") from exc
+        from third_party.gfpgan_arch import GFPGANv1Clean
 
         device = _select_torch_device(torch, self.device_setting)
         restorer = GFPGANv1Clean(
@@ -258,13 +279,11 @@ class FaceEnhancementService:
         restorer.load_state_dict(parameters, strict=True)
         restorer.eval().to(device)
 
-        self._cv2 = cv2
-        self._np = np
         self._torch = torch
         self._gfpgan = restorer
         self._device = device
         LOGGER.info(
-            "face enhancement ready: SCRFD providers=%s GFPGAN device=%s",
+            "face extraction ready: SCRFD providers=%s; experimental GFPGAN device=%s",
             providers,
             device,
         )
@@ -281,61 +300,129 @@ class FaceEnhancementService:
         candidates = []
         for detection, keypoints in zip(detections, landmarks, strict=True):
             left, top, right, bottom, confidence = (float(value) for value in detection[:5])
-            if min(right - left, bottom - top) < self.min_face_size_px:
+            source_size = min(right - left, bottom - top)
+            if confidence < self.confidence_threshold or source_size < self.min_face_size_px:
                 continue
-            track_id = _containing_track((left, top, right, bottom), job.people)
+            face_box = (left, top, right, bottom)
+            track_id = _containing_track(face_box, job.people)
             if track_id is None:
                 continue
             candidates.append(
                 (
-                    float(confidence),
+                    confidence,
                     (right - left) * (bottom - top),
                     track_id,
                     keypoints,
+                    face_box,
+                    source_size,
                 )
             )
         candidates.sort(reverse=True, key=lambda candidate: (candidate[0], candidate[1]))
 
         now = time.monotonic()
         faces = []
-        for confidence, _, track_id, keypoints in candidates[: self.max_faces]:
+        for confidence, _, track_id, keypoints, face_box, source_size in candidates[
+            : self.max_faces
+        ]:
             cache_key = (job.generation, track_id)
             cached = self._cache.get(cache_key)
             if cached is not None and now - cached[0] < self.refresh_seconds:
-                jpeg = cached[1]
-                confidence = cached[2]
+                face = dict(cached[1])
             else:
-                aligned = _align_face(job.frame, keypoints, self._cv2, self._np)
-                restored = self._restore(aligned)
-                encoded, buffer = self._cv2.imencode(
-                    ".jpg",
-                    restored,
-                    [int(self._cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
-                )
-                if not encoded:
+                try:
+                    source_crop = _extract_source_face(job.frame, face_box)
+                    source_jpeg = self._encode_jpeg(source_crop)
+                    sharpness = _source_sharpness(job.frame, face_box, self._cv2)
+                except Exception:
+                    LOGGER.exception("could not extract source face for track %s", track_id)
                     continue
-                jpeg = buffer.tobytes()
-                self._cache[cache_key] = (now, jpeg, confidence)
-            faces.append(
-                {
+                if source_jpeg is None:
+                    continue
+
+                aligned = None
+                aligned_jpeg = None
+                review_jpeg = None
+                reason = None
+                restoration_status = "disabled"
+                try:
+                    aligned = _align_face(job.frame, keypoints, self._cv2, self._np)
+                    aligned_jpeg = self._encode_jpeg(aligned)
+                    if aligned_jpeg is None:
+                        reason = "alignment_encoding_failed"
+                except Exception:
+                    LOGGER.exception("could not align face for track %s", track_id)
+                    reason = "alignment_failed"
+
+                if self.enable_restoration and aligned is not None and aligned_jpeg is not None:
+                    reason = _restoration_rejection_reason(
+                        source_size,
+                        sharpness,
+                        self.restoration_min_face_size_px,
+                        self.restoration_min_sharpness,
+                    )
+                    restoration_status = "rejected" if reason is not None else "blended"
+                    if reason is None:
+                        try:
+                            restored = self._restore(aligned)
+                            review = self._cv2.addWeighted(
+                                aligned,
+                                1.0 - self.restoration_blend_weight,
+                                restored,
+                                self.restoration_blend_weight,
+                                0.0,
+                            )
+                            review_jpeg = self._encode_jpeg(review)
+                            if review_jpeg is None:
+                                reason = "restoration_encoding_failed"
+                                restoration_status = "rejected"
+                        except Exception:
+                            LOGGER.exception("GFPGAN restoration failed for track %s", track_id)
+                            reason = "restoration_failed"
+                            restoration_status = "rejected"
+                elif reason is not None:
+                    restoration_status = "rejected"
+
+                face = {
                     "track_id": track_id,
                     "confidence": round(confidence, 3),
-                    "jpeg": jpeg,
+                    "source_face_size_px": round(source_size, 1),
+                    "source_sharpness": round(sharpness, 1),
+                    "restoration_status": restoration_status,
+                    "quality_reason": reason,
+                    "blend_weight": (
+                        self.restoration_blend_weight if review_jpeg is not None else None
+                    ),
+                    "source_jpeg": source_jpeg,
+                    "aligned_jpeg": aligned_jpeg,
+                    "jpeg": review_jpeg,
                 }
-            )
+                self._cache[cache_key] = (now, face)
+            faces.append(face)
 
         cutoff = now - self.cache_ttl_seconds
-        for cache_key, (updated_at, _, _) in tuple(self._cache.items()):
+        for cache_key, (updated_at, _) in tuple(self._cache.items()):
             if updated_at < cutoff or cache_key[0] != job.generation:
                 del self._cache[cache_key]
         return faces
+
+    def _encode_jpeg(self, image) -> bytes | None:
+        encoded, buffer = self._cv2.imencode(
+            ".jpg",
+            image,
+            [int(self._cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+        )
+        return buffer.tobytes() if encoded else None
 
     def _restore(self, aligned):
         rgb = self._np.ascontiguousarray(aligned[:, :, ::-1])
         tensor = self._torch.from_numpy(rgb.transpose(2, 0, 1)).float().div(255.0)
         tensor = tensor.sub(0.5).div(0.5).unsqueeze(0).to(self._device)
         with self._torch.no_grad():
-            output = self._gfpgan(tensor, return_rgb=False, weight=0.5)[0]
+            output = self._gfpgan(
+                tensor,
+                return_rgb=False,
+                randomize_noise=False,
+            )[0]
         output = output.squeeze(0).detach().float().cpu().clamp_(-1, 1)
         image = output.add(1).div(2).mul(255).round().byte().numpy().transpose(1, 2, 0)
         return self._np.ascontiguousarray(image[:, :, ::-1])
@@ -405,6 +492,52 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _extract_source_face(
+    frame,
+    face_box: tuple[float, float, float, float],
+    padding_ratio: float = 0.15,
+):
+    """Copy detected camera pixels with modest context and no generative processing."""
+    height, width = frame.shape[:2]
+    face_width = max(1.0, face_box[2] - face_box[0])
+    face_height = max(1.0, face_box[3] - face_box[1])
+    padding_x = face_width * padding_ratio
+    padding_y = face_height * padding_ratio
+    left = max(0, min(width, int(face_box[0] - padding_x)))
+    top = max(0, min(height, int(face_box[1] - padding_y)))
+    right = max(0, min(width, int(face_box[2] + padding_x + 0.999)))
+    bottom = max(0, min(height, int(face_box[3] + padding_y + 0.999)))
+    return frame[top:bottom, left:right].copy()
+
+
+def _source_sharpness(frame, face_box: tuple[float, float, float, float], cv2) -> float:
+    """Return variance-of-Laplacian sharpness from the detected source pixels."""
+    height, width = frame.shape[:2]
+    left = max(0, min(width, int(face_box[0])))
+    top = max(0, min(height, int(face_box[1])))
+    right = max(0, min(width, int(face_box[2] + 0.999)))
+    bottom = max(0, min(height, int(face_box[3] + 0.999)))
+    if right <= left or bottom <= top:
+        return 0.0
+    source_crop = frame[top:bottom, left:right]
+    if len(source_crop.shape) == 3:
+        source_crop = cv2.cvtColor(source_crop, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(source_crop, cv2.CV_64F).var())
+
+
+def _restoration_rejection_reason(
+    source_size: float,
+    sharpness: float,
+    minimum_size: int,
+    minimum_sharpness: float,
+) -> str | None:
+    if source_size < minimum_size:
+        return "source_face_too_small"
+    if sharpness < minimum_sharpness:
+        return "source_face_too_blurry"
+    return None
 
 
 def _containing_track(

@@ -22,6 +22,7 @@ const el = {
   statAlerts: document.getElementById("stat-alerts"),
   statUptime: document.getElementById("stat-uptime"),
   statFps: document.getElementById("stat-fps"),
+  statRecording: document.getElementById("stat-recording"),
 };
 
 function tickClock() {
@@ -83,6 +84,7 @@ function applyStats(stats) {
     el.statUptime.textContent = formatUptime(stats.uptime_seconds);
   }
   if (stats.fps !== undefined) el.statFps.textContent = Number(stats.fps).toFixed(1);
+  if (stats.recording_status) el.statRecording.textContent = stats.recording_status;
   if (stats.frame_number !== undefined) {
     el.frameCounter.textContent = `frame ${stats.frame_number}`;
   }
@@ -106,9 +108,9 @@ function renderFaces(snapshot) {
     const empty = document.createElement("p");
     empty.className = "face-empty";
     if (snapshot.status === "disabled") {
-      empty.textContent = "Face enhancement is disabled. Enable SCRFD + GFPGAN to use this panel.";
+      empty.textContent = "Face extraction is disabled. Enable SCRFD to use this panel.";
     } else if (snapshot.status === "loading") {
-      empty.textContent = "Loading SCRFD and GFPGAN models…";
+      empty.textContent = "Loading SCRFD face detector…";
     } else if (snapshot.status === "unavailable" || snapshot.status === "error") {
       empty.textContent = snapshot.message || "Face enhancement is unavailable.";
     } else {
@@ -118,17 +120,83 @@ function renderFaces(snapshot) {
     return;
   }
 
-  for (const face of faces) {
-    const card = document.createElement("figure");
-    card.className = "face-card";
+  const rejectionLabels = {
+    source_face_too_small: "GFPGAN REJECTED · source face too small",
+    source_face_too_blurry: "GFPGAN REJECTED · source face too blurred",
+    alignment_failed: "ALIGNMENT REJECTED · landmarks invalid",
+    alignment_encoding_failed: "ALIGNMENT REJECTED · encoding failed",
+    restoration_failed: "SOURCE ONLY · GFPGAN failed",
+    restoration_encoding_failed: "SOURCE ONLY · GFPGAN encoding failed",
+  };
+
+  const makeVariant = (url, label, alt) => {
+    const variant = document.createElement("figure");
+    variant.className = "face-variant";
     const image = document.createElement("img");
-    image.src = face.image_url;
-    image.alt = `AI-enhanced face for track ${face.track_id}`;
+    image.src = url;
+    image.alt = alt;
     const caption = document.createElement("figcaption");
+    caption.textContent = label;
+    variant.append(image, caption);
+    return variant;
+  };
+
+  for (const face of faces) {
+    const card = document.createElement("article");
+    card.className = "face-card";
+    const comparison = document.createElement("div");
+    comparison.className = "face-comparison";
+    comparison.append(
+      makeVariant(
+        face.source_image_url,
+        "DETECTED SOURCE · NO AI",
+        `Original detected face pixels for track ${face.track_id}`,
+      ),
+    );
+    if (face.aligned_image_url) {
+      comparison.append(
+        makeVariant(
+          face.aligned_image_url,
+          "LANDMARK ALIGNED · NO AI",
+          `Landmark-aligned source face for track ${face.track_id}`,
+        ),
+      );
+    }
+
+    if (face.review_image_url) {
+      const blendWeight = Number(face.blend_weight);
+      const blendLabel =
+        face.blend_weight !== null && Number.isFinite(blendWeight)
+          ? `EXPERIMENTAL GFPGAN · ${Math.round(blendWeight * 100)}%`
+          : "EXPERIMENTAL GFPGAN";
+      comparison.append(
+        makeVariant(
+          face.review_image_url,
+          blendLabel,
+          `Conservative AI face blend for track ${face.track_id}`,
+        ),
+      );
+    } else if (face.restoration_status === "rejected") {
+      const rejected = document.createElement("div");
+      rejected.className = "face-rejected";
+      rejected.textContent = rejectionLabels[face.quality_reason] || "SOURCE ONLY · GFPGAN rejected";
+      comparison.append(rejected);
+    }
+
+    const details = document.createElement("p");
+    details.className = "face-details mono";
     const confidence = Number(face.confidence);
-    const confidenceText = Number.isFinite(confidence) ? ` · ${confidence.toFixed(2)}` : "";
-    caption.textContent = `AI ENHANCED · #${face.track_id}${confidenceText}`;
-    card.append(image, caption);
+    const sourceSize = Number(face.source_face_size_px);
+    const confidenceText =
+      face.confidence !== null && Number.isFinite(confidence)
+        ? ` · detection ${confidence.toFixed(2)}`
+        : "";
+    const sizeText =
+      face.source_face_size_px !== null && Number.isFinite(sourceSize)
+        ? ` · source ${Math.round(sourceSize)}px`
+        : "";
+    details.textContent = `TRACK #${face.track_id}${confidenceText}${sizeText}`;
+    card.append(comparison, details);
     el.enhancedFaces.append(card);
   }
 }

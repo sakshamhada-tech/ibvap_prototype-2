@@ -1,3 +1,6 @@
+import sys
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -95,7 +98,9 @@ def test_authenticated_session_access_and_logout(client):
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "SameSite=strict" in response.headers["set-cookie"]
     assert client.get("/").status_code == 200
-    assert client.get("/api/stats").status_code == 200
+    stats = client.get("/api/stats")
+    assert stats.status_code == 200
+    assert "recording_status" in stats.json()
 
     logged_out = client.post("/logout", follow_redirects=False)
     assert logged_out.status_code == 303
@@ -110,18 +115,49 @@ def test_enhanced_face_panel_api_is_authenticated(client):
             "frame_number": 12,
             "updated_monotonic": 1.0,
             "message": None,
-            "faces": [{"track_id": 7, "confidence": 0.93, "jpeg": b"test-jpeg"}],
+            "faces": [
+                {
+                    "track_id": 7,
+                    "confidence": 0.93,
+                    "source_jpeg": b"source-jpeg",
+                    "aligned_jpeg": b"aligned-jpeg",
+                    "jpeg": b"review-jpeg",
+                    "restoration_status": "blended",
+                    "quality_reason": None,
+                    "blend_weight": 0.25,
+                },
+                {
+                    "track_id": 8,
+                    "confidence": 0.91,
+                    "source_jpeg": b"rejected-source",
+                    "jpeg": None,
+                    "restoration_status": "rejected",
+                    "quality_reason": "source_face_too_small",
+                    "blend_weight": None,
+                },
+            ],
         }
     )
 
     summary = client.get("/api/faces")
     assert summary.status_code == 200
-    assert summary.json()["faces"][0]["track_id"] == 7
-    assert "not forensic evidence" in summary.json()["disclaimer"]
-    image = client.get(summary.json()["faces"][0]["image_url"])
-    assert image.status_code == 200
-    assert image.headers["content-type"] == "image/jpeg"
-    assert image.content == b"test-jpeg"
+    payload = summary.json()
+    assert payload["faces"][0]["track_id"] == 7
+    assert "not forensic evidence" in payload["disclaimer"]
+    source = client.get(payload["faces"][0]["source_image_url"])
+    aligned = client.get(payload["faces"][0]["aligned_image_url"])
+    review = client.get(payload["faces"][0]["review_image_url"])
+    assert source.content == b"source-jpeg"
+    assert aligned.content == b"aligned-jpeg"
+    assert review.status_code == 200
+    assert review.headers["content-type"] == "image/jpeg"
+    assert review.content == b"review-jpeg"
+    assert payload["faces"][1]["aligned_image_url"] is None
+    assert payload["faces"][1]["review_image_url"] is None
+    assert client.get(payload["faces"][1]["source_image_url"]).content == b"rejected-source"
+    assert client.get("/api/faces/1").content == b"rejected-source"
+    assert client.get("/api/faces/1?variant=review").status_code == 404
+    assert client.get("/api/faces/0?variant=invalid").status_code == 404
     assert client.get("/api/faces/99").status_code == 404
 
 
@@ -146,3 +182,120 @@ def test_websocket_requires_origin_and_receives_bounded_history(client):
         client.websocket_connect("/ws", headers={"origin": "https://evil.example"}),
     ):
         pass
+
+
+class _FakeWriter:
+    def __init__(self, *, opened=True, fail_write=False):
+        self.opened = opened
+        self.fail_write = fail_write
+        self.frames = []
+        self.released = False
+
+    def isOpened(self):
+        return self.opened
+
+    def write(self, frame):
+        if self.fail_write:
+            raise RuntimeError("simulated write failure")
+        self.frames.append(frame)
+
+    def release(self):
+        self.released = True
+
+
+def _run_capture_once(monkeypatch, tmp_path, writer):
+    service = server.CaptureService(AlertBroker())
+    frame = SimpleNamespace(shape=(48, 64, 3))
+
+    class FakeCapture:
+        def isOpened(self):
+            return True
+
+        def read(self):
+            service._stop_event.set()
+            return True, frame
+
+        def get(self, _property):
+            return 25.0
+
+        def set(self, _property, _value):
+            return False
+
+        def release(self):
+            self.released = True
+
+    class FakePipeline:
+        def __init__(self, **_kwargs):
+            self.stats = {"frames_processed": 1}
+            self.closed = False
+
+        def process_frame(self, received_frame, *, source_time):
+            assert source_time > 0
+            return received_frame
+
+        def reset_tracking(self):
+            raise AssertionError("tracking reset was not expected")
+
+        def close(self):
+            self.closed = True
+
+    writer_calls = []
+
+    def create_writer(*args):
+        writer_calls.append(args)
+        return writer
+
+    fake_cv2 = SimpleNamespace(
+        CAP_PROP_FPS=5,
+        CAP_PROP_POS_MSEC=0,
+        CAP_PROP_POS_FRAMES=1,
+        IMWRITE_JPEG_QUALITY=95,
+        VideoCapture=lambda _source: FakeCapture(),
+        VideoWriter=create_writer,
+        VideoWriter_fourcc=lambda *_codec: 1234,
+        imencode=lambda *_args: (True, SimpleNamespace(tobytes=lambda: b"jpeg")),
+        resize=lambda received_frame, _size: received_frame,
+    )
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+    monkeypatch.setitem(sys.modules, "pipeline", SimpleNamespace(VideoPipeline=FakePipeline))
+    monkeypatch.setattr(server.config, "VIDEO_SOURCE", 0)
+    monkeypatch.setattr(server.config, "SAVE_ANNOTATED_VIDEO", True)
+    monkeypatch.setattr(
+        server.config,
+        "ANNOTATED_VIDEO_PATH",
+        str(tmp_path / "nested" / "annotated.mp4"),
+    )
+
+    service._run()
+    return service, frame, writer_calls
+
+
+def test_capture_service_records_annotated_frames_and_finalizes_on_shutdown(monkeypatch, tmp_path):
+    writer = _FakeWriter()
+    service, frame, writer_calls = _run_capture_once(monkeypatch, tmp_path, writer)
+
+    assert writer_calls == [(str(tmp_path / "nested" / "annotated.mp4"), 1234, 25.0, (64, 48))]
+    assert writer.frames == [frame]
+    assert writer.released is True
+    assert service.latest_jpeg() == b"jpeg"
+    assert service.stats()["recording_status"] == "closed"
+
+
+def test_capture_service_isolates_writer_open_failure(monkeypatch, tmp_path):
+    writer = _FakeWriter(opened=False)
+    service, _frame, _writer_calls = _run_capture_once(monkeypatch, tmp_path, writer)
+
+    assert writer.released is True
+    assert service.latest_jpeg() == b"jpeg"
+    assert service.stats()["frames_processed"] == 1
+    assert service.stats()["recording_status"] == "failed"
+
+
+def test_capture_service_isolates_writer_runtime_failure(monkeypatch, tmp_path):
+    writer = _FakeWriter(fail_write=True)
+    service, _frame, _writer_calls = _run_capture_once(monkeypatch, tmp_path, writer)
+
+    assert writer.released is True
+    assert service.latest_jpeg() == b"jpeg"
+    assert service.stats()["frames_processed"] == 1
+    assert service.stats()["recording_status"] == "failed"

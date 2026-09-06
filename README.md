@@ -16,10 +16,10 @@ webcams, and RTSP/HTTP camera streams.
 | Virtual fence | Visible-box contact and robust crossing with stale-track expiry |
 | Loitering | Continuous observation window using source/media time |
 | Night movement | Smoothed central-ROI brightness with hysteresis |
-| Enhanced face panel | Optional asynchronous SCRFD 2.5G + GFPGAN v1.4 |
+| Face review panel | Original SCRFD camera-pixel crop plus aligned source; GFPGAN opt-in |
 | ANPR | Optional Haar plate localization + throttled EasyOCR |
 | Alerts | UTC/source timestamps, cooldowns, CSV, bounded live broadcast |
-| Dashboard | Authenticated FastAPI, MJPEG feed, enhanced faces, WebSocket alerts/stats |
+| Dashboard | Authenticated FastAPI, MJPEG feed, source-face review, WebSocket alerts/stats |
 | Source resilience | Camera reconnect, health checks, file-loop state reset |
 
 SCRFD face localization and GFPGAN restoration are **not** face recognition or
@@ -42,15 +42,15 @@ YOLOv8 + ByteTrack
        ├── continuous loitering window
        ├── night classification
        ├── optional throttled plate OCR
-       └── bounded raw-frame handoff → SCRFD → GFPGAN worker
+       └── bounded raw-frame handoff → SCRFD source extraction
                                            │
-                                           └── enhanced JPEG thumbnails
+                                           └── optional experimental GFPGAN preview
        │
        ▼
 VideoPipeline
        ├── AlertLogger → CSV
        ├── main.py → window and/or MP4
-       └── server.py → MJPEG + enhanced-face panel + per-client WebSocket queues
+       └── server.py → MJPEG + MP4 + face-review panel + per-client WebSocket queues
 ```
 
 Recorded-video analytics use media timestamps, so alerts do not change merely
@@ -121,12 +121,23 @@ python scripts/doctor.py --face
 export IBVAP_ENABLE_FACE_ENHANCEMENT=true
 ```
 
-The verified model files are placed under `models/` and ignored by Git. SCRFD
-and GFPGAN run on a bounded background worker; capture, object detection,
-tracking, alerts, and the raw annotated stream continue if that worker is slow
-or fails. GFPGAN never replaces pixels in the primary stream or recording. Its
-results appear only in the authenticated **Enhanced faces** panel and are
-labelled as AI-enhanced, non-forensic visualizations.
+The verified model files are placed under `models/` and ignored by Git. Face
+review runs on a bounded background worker; capture, object detection, tracking,
+alerts, and the raw annotated stream continue if that worker is slow or fails.
+The default panel is identity-first: **Detected source** is a direct copy of the
+SCRFD bounding-box pixels from the camera, with no AI generation, warping,
+sharpening, or synthetic detail. **Landmark aligned** contains the same source
+pixels transformed to a standard pose and is labelled separately.
+
+GFPGAN is deliberately disabled by default because it generates a plausible
+portrait and can change identity even when a face looks visible to a human. To
+show an explicitly experimental preview, set
+`IBVAP_ENABLE_GFPGAN_RESTORATION=true`. The preview requires a source face of at
+least 96 pixels, must pass the sharpness gate, is deterministic, and defaults to
+a 90% aligned-source / 10% GFPGAN blend. It never replaces pixels in the stream
+or recording. These controls reduce identity drift; they cannot create authentic
+details that the camera never captured. Tiny, blurred, compressed, occluded, or
+poorly exposed faces remain unsuitable for identity assessment.
 
 ### macOS: `No module named 'cv2'`
 
@@ -166,11 +177,16 @@ Common analytics settings:
 | `IBVAP_LOITERING_MOVEMENT_THRESHOLD_PX` | `60` | Maximum window spread |
 | `IBVAP_TRACK_MAX_OBSERVATION_GAP_SECONDS` | `1.5` | Gap that resets loitering history |
 | `IBVAP_TRACK_STALE_SECONDS` | `3` | State-retention period for missing tracks |
-| `IBVAP_ENABLE_FACE_ENHANCEMENT` | `false` | Enable optional SCRFD + GFPGAN panel |
+| `IBVAP_ENABLE_FACE_ENHANCEMENT` | `false` | Enable SCRFD source-face extraction panel |
+| `IBVAP_ENABLE_GFPGAN_RESTORATION` | `false` | Add experimental generative GFPGAN preview |
 | `IBVAP_FACE_ENHANCEMENT_INTERVAL_FRAMES` | `15` | Raw-frame submission cadence |
 | `IBVAP_FACE_ENHANCEMENT_MAX_FACES` | `4` | Maximum enhanced faces per update |
 | `IBVAP_FACE_ENHANCEMENT_DEVICE` | `auto` | GFPGAN device: auto, CPU, MPS, or CUDA |
 | `IBVAP_SCRFD_CONFIDENCE_THRESHOLD` | `0.6` | Minimum SCRFD detection confidence |
+| `IBVAP_SCRFD_MIN_FACE_SIZE_PX` | `32` | Smallest face retained as an aligned source preview |
+| `IBVAP_GFPGAN_MIN_SOURCE_FACE_SIZE_PX` | `96` | Minimum source-face dimension allowed into GFPGAN |
+| `IBVAP_GFPGAN_MIN_SOURCE_SHARPNESS` | `50` | Minimum source-crop variance-of-Laplacian sharpness |
+| `IBVAP_GFPGAN_BLEND_WEIGHT` | `0.10` | GFPGAN share of experimental image; constrained to 0–0.5 |
 | `IBVAP_ENABLE_ANPR` | `false` | Enable optional plate OCR |
 | `IBVAP_ANPR_INTERVAL_FRAMES` | `15` | Plate/OCR processing cadence |
 
@@ -221,14 +237,30 @@ local origins when the port matches; other origins remain restricted. The
 credentials above are newly generated each shell session; store controlled
 deployment values in a secret manager.
 
+`server.py` honors `IBVAP_SAVE_ANNOTATED_VIDEO` and writes annotated frames to
+`IBVAP_ANNOTATED_VIDEO_PATH` (`output/annotated_output.mp4` by
+default), independently of connected browser clients. Stop the server
+gracefully (Ctrl+C or SIGTERM) so OpenCV releases the writer and finalizes the
+MP4 container metadata; a running or forcibly killed process can leave the file
+unplayable or apparently empty. Recording-open/write failures are reported as
+`recording_status=failed` by `/api/stats` but do not stop capture, analytics, or
+streaming.
+
+Alert CSV output is separate and defaults to `logs/alerts.csv`. To keep it next
+to the MP4 instead, set:
+
+```bash
+export IBVAP_ALERT_LOG_CSV=output/alerts.csv
+```
+
 Endpoints:
 
 - `GET /health/live` — capture-thread liveness, no source details
 - `GET /health/ready` — whether a recent frame is available
 - `GET /stream` — authenticated MJPEG stream
 - `GET /api/stats` — authenticated current statistics
-- `GET /api/faces` — authenticated enhanced-face status and image references
-- `GET /api/faces/{index}` — authenticated AI-enhanced JPEG thumbnail
+- `GET /api/faces` — authenticated source/review status, quality, and image references
+- `GET /api/faces/{index}?variant=source|aligned|review` — authenticated face JPEG variant
 - `WS /ws` — authenticated, same-origin alerts and statistics
 
 Each browser receives its own bounded alert queue plus bounded recent history.
@@ -289,8 +321,10 @@ provides the `cv2` import on macOS.
 
 - YOLO, SCRFD, plate Haar cascades, brightness thresholds, and OCR can produce
   false positives and false negatives. Human review remains necessary.
-- GFPGAN synthesizes plausible detail rather than recovering ground truth. Keep
-  raw source footage and never use enhanced thumbnails as identity evidence.
+- GFPGAN synthesizes plausible detail rather than recovering ground truth. No
+  enhancement model can reconstruct identity-accurate detail absent from a
+  tiny, blurred, compressed, occluded, or poorly exposed source. Keep raw
+  source footage and never use enhanced thumbnails as identity evidence.
 - Smoothed central-region brightness is still a coarse day/night classifier
   and should be calibrated per camera.
 - A pixel-coordinate fence must be calibrated whenever resolution or camera

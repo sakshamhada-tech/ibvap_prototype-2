@@ -57,8 +57,8 @@ class CaptureService:
         self._stats: dict = {}
         self._faces_lock = threading.Lock()
         self._face_version = 0
-        self._face_images: tuple[bytes, ...] = ()
-        self._face_image_versions: dict[int, tuple[bytes, ...]] = {0: ()}
+        self._face_images: tuple[dict[str, bytes], ...] = ()
+        self._face_image_versions: dict[int, tuple[dict[str, bytes], ...]] = {0: ()}
         self._face_metadata: tuple[dict, ...] = ()
         self._face_status = "loading" if config.ENABLE_FACE_ENHANCEMENT else "disabled"
         self._face_message: str | None = None
@@ -68,6 +68,7 @@ class CaptureService:
         self._status = "stopped"
         self._last_error: str | None = None
         self._reconnects = 0
+        self._recording_status = "pending" if config.SAVE_ANNOTATED_VIDEO else "disabled"
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -103,6 +104,10 @@ class CaptureService:
 
     def _run(self) -> None:
         pipeline = None
+        writer = None
+        writer_size = None
+        writer_failed = False
+        self._set_recording_status("pending" if config.SAVE_ANNOTATED_VIDEO else "disabled")
         try:
             # Heavy CV dependencies are loaded inside the worker so importing
             # the ASGI app for tooling does not initialize a model or camera.
@@ -167,6 +172,61 @@ class CaptureService:
                         )
                         try:
                             annotated = pipeline.process_frame(frame, source_time=source_time)
+                            if config.SAVE_ANNOTATED_VIDEO and writer is None and not writer_failed:
+                                frame_height, frame_width = annotated.shape[:2]
+                                candidate = None
+                                try:
+                                    Path(config.ANNOTATED_VIDEO_PATH).parent.mkdir(
+                                        parents=True,
+                                        exist_ok=True,
+                                    )
+                                    candidate = cv2.VideoWriter(
+                                        config.ANNOTATED_VIDEO_PATH,
+                                        cv2.VideoWriter_fourcc(*"mp4v"),
+                                        source_fps,
+                                        (frame_width, frame_height),
+                                    )
+                                    if not candidate.isOpened():
+                                        raise RuntimeError("video writer did not open")
+                                except Exception:
+                                    LOGGER.exception(
+                                        "could not open annotated server recording: %s",
+                                        config.ANNOTATED_VIDEO_PATH,
+                                    )
+                                    if candidate is not None:
+                                        try:
+                                            candidate.release()
+                                        except Exception:
+                                            LOGGER.exception(
+                                                "could not release failed video writer"
+                                            )
+                                    writer_failed = True
+                                    self._set_recording_status("failed")
+                                else:
+                                    writer = candidate
+                                    writer_size = (frame_width, frame_height)
+                                    self._set_recording_status("recording")
+                                    LOGGER.info(
+                                        "annotated server recording: %s",
+                                        config.ANNOTATED_VIDEO_PATH,
+                                    )
+                            if writer is not None:
+                                try:
+                                    recording_frame = annotated
+                                    current_size = (annotated.shape[1], annotated.shape[0])
+                                    if current_size != writer_size:
+                                        recording_frame = cv2.resize(annotated, writer_size)
+                                    writer.write(recording_frame)
+                                except Exception:
+                                    LOGGER.exception("annotated server recording failed")
+                                    failed_writer = writer
+                                    writer = None
+                                    writer_failed = True
+                                    self._set_recording_status("failed")
+                                    try:
+                                        failed_writer.release()
+                                    except Exception:
+                                        LOGGER.exception("could not release failed video writer")
                             encoded, buffer = cv2.imencode(
                                 ".jpg",
                                 annotated,
@@ -204,6 +264,18 @@ class CaptureService:
             self._clear_frame()
             self._set_status("failed", str(exc))
         finally:
+            if writer is not None:
+                try:
+                    writer.release()
+                except Exception:
+                    self._set_recording_status("failed")
+                    LOGGER.exception("could not finalize annotated server recording")
+                else:
+                    self._set_recording_status("closed")
+                    LOGGER.info(
+                        "annotated server recording closed: %s",
+                        config.ANNOTATED_VIDEO_PATH,
+                    )
             if pipeline is not None:
                 pipeline.close()
             if self._status != "failed":
@@ -213,6 +285,10 @@ class CaptureService:
         with self._status_lock:
             self._status = status
             self._last_error = error
+
+    def _set_recording_status(self, status: str) -> None:
+        with self._status_lock:
+            self._recording_status = status
 
     def _clear_frame(self) -> None:
         with self._frame_lock:
@@ -227,29 +303,55 @@ class CaptureService:
         with self._stats_lock:
             stats = dict(self._stats)
         stats.update(self.health())
+        with self._status_lock:
+            stats["recording_status"] = self._recording_status
         with self._faces_lock:
             stats["face_enhancement_status"] = self._face_status
             stats["enhanced_face_count"] = len(self._face_images)
         return stats
 
     def _update_face_snapshot(self, snapshot: dict) -> None:
-        faces = snapshot.get("faces", ())
-        images = tuple(face["jpeg"] for face in faces if isinstance(face.get("jpeg"), bytes))
-        metadata = tuple(
-            {
-                "track_id": face.get("track_id"),
-                "confidence": face.get("confidence"),
-            }
-            for face in faces
-            if isinstance(face.get("jpeg"), bytes)
-        )
+        images = []
+        metadata = []
+        for face in snapshot.get("faces", ()):
+            source = face.get("source_jpeg")
+            aligned = face.get("aligned_jpeg")
+            review = face.get("jpeg")
+            # Accept older worker snapshots during a rolling process update.
+            if not isinstance(source, bytes):
+                source = aligned if isinstance(aligned, bytes) else review
+            if not isinstance(source, bytes):
+                continue
+            variants = {"source": source}
+            if isinstance(aligned, bytes):
+                variants["aligned"] = aligned
+            if isinstance(review, bytes):
+                variants["review"] = review
+            images.append(variants)
+            metadata.append(
+                {
+                    "track_id": face.get("track_id"),
+                    "confidence": face.get("confidence"),
+                    "source_face_size_px": face.get("source_face_size_px"),
+                    "source_sharpness": face.get("source_sharpness"),
+                    "restoration_status": face.get(
+                        "restoration_status",
+                        "blended" if "review" in variants else "rejected",
+                    ),
+                    "quality_reason": face.get("quality_reason"),
+                    "blend_weight": face.get("blend_weight"),
+                    "has_aligned": "aligned" in variants,
+                    "has_review": "review" in variants,
+                }
+            )
+        image_tuple = tuple(images)
         with self._faces_lock:
             self._face_version += 1
-            self._face_images = images
-            self._face_image_versions[self._face_version] = images
+            self._face_images = image_tuple
+            self._face_image_versions[self._face_version] = image_tuple
             while len(self._face_image_versions) > 3:
                 del self._face_image_versions[min(self._face_image_versions)]
-            self._face_metadata = metadata
+            self._face_metadata = tuple(metadata)
             self._face_status = str(snapshot.get("status", "error"))
             self._face_message = snapshot.get("message")
             self._face_frame_number = snapshot.get("frame_number")
@@ -263,30 +365,63 @@ class CaptureService:
                 else max(0.0, time.monotonic() - self._face_updated_monotonic)
             )
             version = self._face_version
+            faces = []
+            for index, metadata in enumerate(self._face_metadata):
+                source_url = f"/api/faces/{index}?version={version}&variant=source"
+                aligned_url = (
+                    f"/api/faces/{index}?version={version}&variant=aligned"
+                    if metadata["has_aligned"]
+                    else None
+                )
+                review_url = (
+                    f"/api/faces/{index}?version={version}&variant=review"
+                    if metadata["has_review"]
+                    else None
+                )
+                faces.append(
+                    {
+                        **metadata,
+                        "image_url": source_url,
+                        "source_image_url": source_url,
+                        "aligned_image_url": aligned_url,
+                        "review_image_url": review_url,
+                    }
+                )
             return {
                 "status": self._face_status,
                 "message": self._face_message,
                 "frame_number": self._face_frame_number,
                 "age_seconds": None if updated_age is None else round(updated_age, 2),
                 "version": version,
-                "faces": [
-                    {
-                        **metadata,
-                        "image_url": f"/api/faces/{index}?version={version}",
-                    }
-                    for index, metadata in enumerate(self._face_metadata)
-                ],
-                "disclaimer": "AI-enhanced visualization; not forensic evidence.",
+                "faces": faces,
+                "disclaimer": (
+                    "Detected source contains camera pixels only. Alignment changes geometry; "
+                    "optional GFPGAN previews can invent details and are not forensic evidence."
+                ),
             }
 
-    def face_image(self, index: int, version: int | None = None) -> bytes | None:
+    def face_image(
+        self,
+        index: int,
+        version: int | None = None,
+        variant: str = "source",
+    ) -> bytes | None:
         with self._faces_lock:
             images = (
                 self._face_images if version is None else self._face_image_versions.get(version, ())
             )
-            if index < 0 or index >= len(images):
+            if (
+                index < 0
+                or index >= len(images)
+                or variant
+                not in {
+                    "source",
+                    "aligned",
+                    "review",
+                }
+            ):
                 return None
-            return images[index]
+            return images[index].get(variant)
 
     def health(self) -> dict:
         now = time.monotonic()
@@ -553,10 +688,15 @@ def api_faces(request: Request):
 
 
 @app.get("/api/faces/{index}")
-def api_face_image(index: int, request: Request, version: int | None = None):
+def api_face_image(
+    index: int,
+    request: Request,
+    version: int | None = None,
+    variant: str = "source",
+):
     if not _operator(request):
         return JSONResponse({"detail": "authentication required"}, status_code=401)
-    image = capture_service.face_image(index, version)
+    image = capture_service.face_image(index, version, variant)
     if image is None:
         return JSONResponse({"detail": "enhanced face not found"}, status_code=404)
     return Response(content=image, media_type="image/jpeg")
