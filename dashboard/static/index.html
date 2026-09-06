@@ -42,15 +42,28 @@
       </div>
     </section>
 
-    <section class="panel panel--log">
-      <div class="panel__label">
-        <span>Alert log</span>
-        <span id="alert-count" class="mono muted">0 this session</span>
-      </div>
-      <ul id="alert-log" class="alert-log" aria-live="polite">
-        <li class="alert-empty">No alerts yet. Watching the feed.</li>
-      </ul>
-    </section>
+    <div class="console__rail">
+      <section class="panel panel--faces">
+        <div class="panel__label">
+          <span>Enhanced faces</span>
+          <span id="face-status" class="mono muted">checking</span>
+        </div>
+        <div id="enhanced-faces" class="enhanced-faces" aria-live="polite">
+          <p class="face-empty">Waiting for the face-enhancement service.</p>
+        </div>
+        <p class="enhancement-notice">AI-enhanced visualization · not forensic evidence</p>
+      </section>
+
+      <section class="panel panel--log">
+        <div class="panel__label">
+          <span>Alert log</span>
+          <span id="alert-count" class="mono muted">0 this session</span>
+        </div>
+        <ul id="alert-log" class="alert-log" aria-live="polite">
+          <li class="alert-empty">No alerts yet. Watching the feed.</li>
+        </ul>
+      </section>
+    </div>
   </main>
 
   <footer class="console__stats">

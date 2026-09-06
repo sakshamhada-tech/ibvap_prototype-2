@@ -1,0 +1,4 @@
+# Optional SCRFD detection and GFPGAN restoration stack.
+-r requirements.txt
+insightface>=1.0.1,<2.0.0
+onnxruntime>=1.23.0,<2.0.0

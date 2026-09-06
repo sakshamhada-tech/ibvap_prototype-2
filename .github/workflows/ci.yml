@@ -26,13 +26,15 @@ jobs:
       - name: Unit tests
         run: python -m pytest --cov --cov-report=term-missing
       - name: Static security scan
-        run: python -m bandit -q -r config.py detector.py main.py pipeline.py security.py server.py utils -s B104
+        run: make security
       - name: Dependency vulnerability audit
         run: make audit
       - name: Resolve universal lock for Apple Silicon macOS 14
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
-        run: uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements.lock
+        run: |
+          uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements.lock
+          uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements-face.lock
 
   macos-opencv:
     runs-on: macos-14

@@ -141,6 +141,21 @@ body {
   min-height: 0;
 }
 
+.console__rail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.panel--faces {
+  flex: 0 0 auto;
+}
+
+.panel--log {
+  flex: 1;
+}
+
 .panel__label {
   padding: 10px 14px;
   border-bottom: 1px solid var(--hairline);
@@ -219,6 +234,61 @@ body {
   right: 10px;
   border-bottom: 2px solid;
   border-right: 2px solid;
+}
+
+/* -------------------------------------------------- enhanced faces */
+
+.enhanced-faces {
+  min-height: 112px;
+  max-height: 226px;
+  padding: 8px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.face-card {
+  margin: 0;
+  min-width: 0;
+  border: 1px solid var(--hairline);
+  background: #050705;
+}
+
+.face-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+}
+
+.face-card figcaption {
+  padding: 5px 6px;
+  color: var(--text-muted);
+  font: 10px var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.face-empty {
+  grid-column: 1 / -1;
+  align-self: center;
+  margin: 0;
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.enhancement-notice {
+  margin: 0;
+  padding: 6px 10px;
+  border-top: 1px solid var(--hairline);
+  color: var(--signal-amber);
+  font: 9px var(--font-mono);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 /* -------------------------------------------------- alert log */

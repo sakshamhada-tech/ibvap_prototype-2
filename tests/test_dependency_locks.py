@@ -16,7 +16,19 @@ def test_linux_accelerator_packages_are_platform_guarded():
     assert all("sys_platform == 'linux'" in line for line in accelerator_lines)
 
 
+def test_face_lock_contains_requested_inference_stack():
+    lock = (ROOT / "requirements-face.lock").read_text(encoding="utf-8")
+    assert "insightface==" in lock
+    assert "onnxruntime==" in lock
+    assert "basicsr==" not in lock
+
+
 def test_locks_are_generated_as_universal_resolutions():
-    for filename in ("requirements.lock", "requirements-anpr.lock", "requirements-dev.lock"):
+    for filename in (
+        "requirements.lock",
+        "requirements-anpr.lock",
+        "requirements-face.lock",
+        "requirements-dev.lock",
+    ):
         header = (ROOT / filename).read_text(encoding="utf-8").splitlines()[:3]
         assert "make lock" in "\n".join(header)

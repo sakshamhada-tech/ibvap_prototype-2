@@ -13,7 +13,13 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -49,6 +55,15 @@ class CaptureService:
         self._latest_frame_monotonic: float | None = None
         self._stats_lock = threading.Lock()
         self._stats: dict = {}
+        self._faces_lock = threading.Lock()
+        self._face_version = 0
+        self._face_images: tuple[bytes, ...] = ()
+        self._face_image_versions: dict[int, tuple[bytes, ...]] = {0: ()}
+        self._face_metadata: tuple[dict, ...] = ()
+        self._face_status = "loading" if config.ENABLE_FACE_ENHANCEMENT else "disabled"
+        self._face_message: str | None = None
+        self._face_frame_number: int | None = None
+        self._face_updated_monotonic: float | None = None
         self._status_lock = threading.Lock()
         self._status = "stopped"
         self._last_error: str | None = None
@@ -96,7 +111,10 @@ class CaptureService:
             from pipeline import VideoPipeline
 
             self._set_status("initializing")
-            pipeline = VideoPipeline(on_alert=self.broker.publish)
+            pipeline = VideoPipeline(
+                on_alert=self.broker.publish,
+                on_face_snapshot=self._update_face_snapshot,
+            )
             while not self._stop_event.is_set():
                 capture = self._open_capture(cv2)
                 if not capture.isOpened():
@@ -209,7 +227,66 @@ class CaptureService:
         with self._stats_lock:
             stats = dict(self._stats)
         stats.update(self.health())
+        with self._faces_lock:
+            stats["face_enhancement_status"] = self._face_status
+            stats["enhanced_face_count"] = len(self._face_images)
         return stats
+
+    def _update_face_snapshot(self, snapshot: dict) -> None:
+        faces = snapshot.get("faces", ())
+        images = tuple(face["jpeg"] for face in faces if isinstance(face.get("jpeg"), bytes))
+        metadata = tuple(
+            {
+                "track_id": face.get("track_id"),
+                "confidence": face.get("confidence"),
+            }
+            for face in faces
+            if isinstance(face.get("jpeg"), bytes)
+        )
+        with self._faces_lock:
+            self._face_version += 1
+            self._face_images = images
+            self._face_image_versions[self._face_version] = images
+            while len(self._face_image_versions) > 3:
+                del self._face_image_versions[min(self._face_image_versions)]
+            self._face_metadata = metadata
+            self._face_status = str(snapshot.get("status", "error"))
+            self._face_message = snapshot.get("message")
+            self._face_frame_number = snapshot.get("frame_number")
+            self._face_updated_monotonic = snapshot.get("updated_monotonic")
+
+    def face_summary(self) -> dict:
+        with self._faces_lock:
+            updated_age = (
+                None
+                if self._face_updated_monotonic is None
+                else max(0.0, time.monotonic() - self._face_updated_monotonic)
+            )
+            version = self._face_version
+            return {
+                "status": self._face_status,
+                "message": self._face_message,
+                "frame_number": self._face_frame_number,
+                "age_seconds": None if updated_age is None else round(updated_age, 2),
+                "version": version,
+                "faces": [
+                    {
+                        **metadata,
+                        "image_url": f"/api/faces/{index}?version={version}",
+                    }
+                    for index, metadata in enumerate(self._face_metadata)
+                ],
+                "disclaimer": "AI-enhanced visualization; not forensic evidence.",
+            }
+
+    def face_image(self, index: int, version: int | None = None) -> bytes | None:
+        with self._faces_lock:
+            images = (
+                self._face_images if version is None else self._face_image_versions.get(version, ())
+            )
+            if index < 0 or index >= len(images):
+                return None
+            return images[index]
 
     def health(self) -> dict:
         now = time.monotonic()
@@ -466,6 +543,23 @@ def api_stats(request: Request):
     if not _operator(request):
         return JSONResponse({"detail": "authentication required"}, status_code=401)
     return capture_service.stats()
+
+
+@app.get("/api/faces")
+def api_faces(request: Request):
+    if not _operator(request):
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+    return capture_service.face_summary()
+
+
+@app.get("/api/faces/{index}")
+def api_face_image(index: int, request: Request, version: int | None = None):
+    if not _operator(request):
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+    image = capture_service.face_image(index, version)
+    if image is None:
+        return JSONResponse({"detail": "enhanced face not found"}, status_code=404)
+    return Response(content=image, media_type="image/jpeg")
 
 
 @app.get("/stream")

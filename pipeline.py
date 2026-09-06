@@ -12,13 +12,13 @@ import numpy as np
 
 import config
 from detector import Detector
+from face_enhancement import FaceEnhancementService
 from utils.alert_logger import AlertLogger
 from utils.zones import LoiteringDetector, LoiteringState, VirtualFence
 
 LOGGER = logging.getLogger(__name__)
 COLOR_PERSON = (0, 200, 0)
 COLOR_VEHICLE = (0, 140, 255)
-COLOR_FACE = (0, 255, 255)
 COLOR_PLATE = (255, 0, 255)
 COLOR_FENCE = (0, 0, 255)
 COLOR_ALERT_BANNER = (0, 0, 255)
@@ -53,11 +53,6 @@ def draw_detection(frame, detection: dict, is_loitering: bool) -> None:
         color,
         2,
     )
-
-
-def draw_faces(frame, faces) -> None:
-    for x1, y1, x2, y2 in faces:
-        cv2.rectangle(frame, (x1, y1), (x2, y2), COLOR_FACE, 1)
 
 
 def draw_plate(frame, plate_bbox, plate_text: str) -> None:
@@ -118,8 +113,30 @@ def draw_status_bar(frame, is_night: bool, active_alerts, frame_number: int, fps
 class VideoPipeline:
     """One camera's detection, event generation, annotation, and statistics."""
 
-    def __init__(self, on_alert=None, show_overlays: bool = True):
+    def __init__(
+        self,
+        on_alert=None,
+        on_face_snapshot=None,
+        show_overlays: bool = True,
+    ):
         self.detector = Detector()
+        self.face_enhancer = None
+        if config.ENABLE_FACE_ENHANCEMENT and on_face_snapshot is not None:
+            self.face_enhancer = FaceEnhancementService(
+                scrfd_model_path=config.SCRFD_MODEL_PATH,
+                gfpgan_model_path=config.GFPGAN_MODEL_PATH,
+                gfpgan_model_sha256=config.GFPGAN_MODEL_SHA256,
+                confidence_threshold=config.SCRFD_CONFIDENCE_THRESHOLD,
+                input_size=config.SCRFD_INPUT_SIZE,
+                min_face_size_px=config.SCRFD_MIN_FACE_SIZE_PX,
+                max_faces=config.FACE_ENHANCEMENT_MAX_FACES,
+                refresh_seconds=config.FACE_ENHANCEMENT_REFRESH_SECONDS,
+                cache_ttl_seconds=config.FACE_ENHANCEMENT_CACHE_TTL_SECONDS,
+                jpeg_quality=config.FACE_ENHANCEMENT_JPEG_QUALITY,
+                device=config.FACE_ENHANCEMENT_DEVICE,
+                on_snapshot=on_face_snapshot,
+            )
+            self.face_enhancer.start()
         self.fence = VirtualFence(
             config.VIRTUAL_FENCE_LINE,
             stale_after_seconds=config.TRACK_STALE_SECONDS,
@@ -191,6 +208,16 @@ class VideoPipeline:
         detections = self.detector.track_frame(frame)
         people_count = sum(det["class_name"] == "person" for det in detections)
         vehicle_count = len(detections) - people_count
+        if (
+            self.face_enhancer is not None
+            and self.frame_number % config.FACE_ENHANCEMENT_INTERVAL_FRAMES == 0
+        ):
+            people = [
+                (detection["track_id"], detection["bbox"])
+                for detection in detections
+                if detection["class_name"] == "person" and detection["track_id"] is not None
+            ]
+            self.face_enhancer.submit(frame, people, self.frame_number)
 
         for detection in detections:
             track_id = detection["track_id"]
@@ -236,12 +263,6 @@ class VideoPipeline:
                 ):
                     self._remember_alert(f"NIGHT MOVEMENT: {class_name} #{track_id}")
 
-            faces = []
-            if class_name == "person" and self._scheduled(
-                track_id, config.FACE_DETECTION_INTERVAL_FRAMES
-            ):
-                faces = self.detector.detect_faces(frame, detection["bbox"])
-
             plate_text, plate_bbox = None, None
             if (
                 config.ENABLE_ANPR
@@ -264,7 +285,6 @@ class VideoPipeline:
 
             if self.show_overlays:
                 draw_detection(frame, detection, loitering.active)
-                draw_faces(frame, faces)
                 if plate_bbox is not None:
                     draw_plate(frame, plate_bbox, plate_text)
                 center_x, center_y = map(int, detection["centroid"])
@@ -334,6 +354,8 @@ class VideoPipeline:
     def reset_tracking(self) -> None:
         """Clear source-specific state after seek, loop, or reconnect."""
         self.detector.reset_tracking()
+        if self.face_enhancer is not None:
+            self.face_enhancer.reset()
         self.fence.reset()
         self.loiter_detector.reset()
         self.alert_logger.reset_cooldowns()
@@ -345,4 +367,6 @@ class VideoPipeline:
         self._fence_validated = False
 
     def close(self) -> None:
+        if self.face_enhancer is not None:
+            self.face_enhancer.close()
         self.alert_logger.close()

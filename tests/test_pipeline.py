@@ -31,9 +31,30 @@ class FakeFrame:
     shape = (100, 100, 3)
 
 
+class FakeFaceEnhancementService:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.started = False
+        self.submissions = []
+        self.reset_calls = 0
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def submit(self, frame, people, frame_number):
+        self.submissions.append((frame, people, frame_number))
+        return True
+
+    def reset(self):
+        self.reset_calls += 1
+
+    def close(self):
+        self.closed = True
+
+
 class FakeDetector:
     def __init__(self):
-        self.face_calls = 0
         self.reset_calls = 0
         self.bbox = (0, 0, 20, 20)
 
@@ -49,10 +70,6 @@ class FakeDetector:
                 "conf": 0.9,
             }
         ]
-
-    def detect_faces(self, _frame, _bbox):
-        self.face_calls += 1
-        return []
 
     def detect_plate(self, _frame, _bbox):
         raise AssertionError("ANPR is disabled")
@@ -71,7 +88,7 @@ def configure_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "TRACK_MAX_OBSERVATION_GAP_SECONDS", 1.1)
     monkeypatch.setattr(config, "TRACK_STALE_SECONDS", 2)
     monkeypatch.setattr(config, "ENABLE_ANPR", False)
-    monkeypatch.setattr(config, "FACE_DETECTION_INTERVAL_FRAMES", 3)
+    monkeypatch.setattr(config, "ENABLE_FACE_ENHANCEMENT", False)
 
 
 def test_pipeline_uses_source_time_and_persists_active_loitering(monkeypatch, tmp_path):
@@ -89,8 +106,28 @@ def test_pipeline_uses_source_time_and_persists_active_loitering(monkeypatch, tm
     assert len(loitering) == 1
     assert loitering[0]["source_time_seconds"] == 2.0
     assert video_pipeline.loiter_detector.update(1, (10, 10), 3.5).active
-    assert video_pipeline.detector.face_calls == 1
     video_pipeline.close()
+
+
+def test_pipeline_submits_raw_people_to_optional_face_worker(monkeypatch, tmp_path):
+    configure_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "ENABLE_FACE_ENHANCEMENT", True)
+    monkeypatch.setattr(config, "FACE_ENHANCEMENT_INTERVAL_FRAMES", 1)
+    monkeypatch.setattr(pipeline, "FaceEnhancementService", FakeFaceEnhancementService)
+    snapshots = []
+    video_pipeline = pipeline.VideoPipeline(
+        on_face_snapshot=snapshots.append,
+        show_overlays=False,
+    )
+    frame = FakeFrame()
+
+    video_pipeline.process_frame(frame, source_time=0)
+    assert video_pipeline.face_enhancer.started
+    assert video_pipeline.face_enhancer.submissions == [(frame, [(1, (0, 0, 20, 20))], 1)]
+    video_pipeline.reset_tracking()
+    assert video_pipeline.face_enhancer.reset_calls == 1
+    video_pipeline.close()
+    assert video_pipeline.face_enhancer.closed
 
 
 def test_pipeline_flags_person_box_contact_before_centroid_crosses(monkeypatch, tmp_path):

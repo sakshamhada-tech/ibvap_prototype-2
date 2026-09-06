@@ -121,8 +121,38 @@ if NIGHT_BRIGHTNESS_SMOOTHING_ALPHA > 1.0:
 NIGHT_BRIGHTNESS_ROI_MARGIN = _env_float("IBVAP_NIGHT_BRIGHTNESS_ROI_MARGIN", 0.05, minimum=0.0)
 if NIGHT_BRIGHTNESS_ROI_MARGIN >= 0.5:
     raise ValueError("IBVAP_NIGHT_BRIGHTNESS_ROI_MARGIN must be < 0.5")
-ENABLE_FACE_DETECTION = _env_bool("IBVAP_ENABLE_FACE_DETECTION", True)
-FACE_DETECTION_INTERVAL_FRAMES = _env_int("IBVAP_FACE_DETECTION_INTERVAL_FRAMES", 5, minimum=1)
+# SCRFD + GFPGAN is opt-in because restoration is compute-heavy and requires
+# separately licensed model weights. It never modifies the primary video frame.
+ENABLE_FACE_ENHANCEMENT = _env_bool("IBVAP_ENABLE_FACE_ENHANCEMENT", False)
+FACE_ENHANCEMENT_INTERVAL_FRAMES = _env_int("IBVAP_FACE_ENHANCEMENT_INTERVAL_FRAMES", 15, minimum=1)
+FACE_ENHANCEMENT_MAX_FACES = _env_int("IBVAP_FACE_ENHANCEMENT_MAX_FACES", 4, minimum=1)
+FACE_ENHANCEMENT_REFRESH_SECONDS = _env_float(
+    "IBVAP_FACE_ENHANCEMENT_REFRESH_SECONDS", 2.0, minimum=0.1
+)
+FACE_ENHANCEMENT_CACHE_TTL_SECONDS = _env_float(
+    "IBVAP_FACE_ENHANCEMENT_CACHE_TTL_SECONDS", 10.0, minimum=1.0
+)
+FACE_ENHANCEMENT_JPEG_QUALITY = _env_int("IBVAP_FACE_ENHANCEMENT_JPEG_QUALITY", 90, minimum=1)
+if FACE_ENHANCEMENT_JPEG_QUALITY > 100:
+    raise ValueError("IBVAP_FACE_ENHANCEMENT_JPEG_QUALITY must be <= 100")
+SCRFD_CONFIDENCE_THRESHOLD = _env_float("IBVAP_SCRFD_CONFIDENCE_THRESHOLD", 0.6, minimum=0.0)
+if SCRFD_CONFIDENCE_THRESHOLD > 1.0:
+    raise ValueError("IBVAP_SCRFD_CONFIDENCE_THRESHOLD must be <= 1")
+SCRFD_INPUT_SIZE = _env_int("IBVAP_SCRFD_INPUT_SIZE", 640, minimum=128)
+if SCRFD_INPUT_SIZE % 32:
+    raise ValueError("IBVAP_SCRFD_INPUT_SIZE must be divisible by 32")
+SCRFD_MIN_FACE_SIZE_PX = _env_int("IBVAP_SCRFD_MIN_FACE_SIZE_PX", 24, minimum=1)
+SCRFD_MODEL_PATH = _resolve_path(os.getenv("IBVAP_SCRFD_MODEL_PATH", "models/scrfd_2.5g.onnx"))
+GFPGAN_MODEL_PATH = _resolve_path(os.getenv("IBVAP_GFPGAN_MODEL_PATH", "models/GFPGANv1.4.pth"))
+GFPGAN_MODEL_SHA256 = os.getenv(
+    "IBVAP_GFPGAN_MODEL_SHA256",
+    "e2cd4703ab14f4d01fd1383a8a8b266f9a5833dacee8e6a79d3bf21a1b6be5ad",
+).lower()
+if not re.fullmatch(r"[0-9a-f]{64}", GFPGAN_MODEL_SHA256):
+    raise ValueError("IBVAP_GFPGAN_MODEL_SHA256 must be a 64-character hexadecimal digest")
+FACE_ENHANCEMENT_DEVICE = os.getenv("IBVAP_FACE_ENHANCEMENT_DEVICE", "auto").strip().lower()
+if FACE_ENHANCEMENT_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
+    raise ValueError("IBVAP_FACE_ENHANCEMENT_DEVICE must be auto, cpu, mps, or cuda")
 # ANPR is opt-in: EasyOCR is heavy and may download separate weights.
 ENABLE_ANPR = _env_bool("IBVAP_ENABLE_ANPR", False)
 ANPR_INTERVAL_FRAMES = _env_int("IBVAP_ANPR_INTERVAL_FRAMES", 15, minimum=1)

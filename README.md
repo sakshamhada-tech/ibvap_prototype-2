@@ -12,19 +12,20 @@ webcams, and RTSP/HTTP camera streams.
 | Capability | Implementation |
 |---|---|
 | Person and vehicle detection | YOLOv8 COCO classes |
-| Persistent object IDs | Ultralytics ByteTrack integration |
-| Virtual fence | Robust line-segment crossing with stale-track expiry |
+| Short-lived object track IDs | Ultralytics ByteTrack integration |
+| Virtual fence | Visible-box contact and robust crossing with stale-track expiry |
 | Loitering | Continuous observation window using source/media time |
 | Night movement | Smoothed central-ROI brightness with hysteresis |
-| Face localization | OpenCV Haar cascade, throttled per track |
+| Enhanced face panel | Optional asynchronous SCRFD 2.5G + GFPGAN v1.4 |
 | ANPR | Optional Haar plate localization + throttled EasyOCR |
 | Alerts | UTC/source timestamps, cooldowns, CSV, bounded live broadcast |
-| Dashboard | Authenticated FastAPI, MJPEG feed, WebSocket alerts/stats |
+| Dashboard | Authenticated FastAPI, MJPEG feed, enhanced faces, WebSocket alerts/stats |
 | Source resilience | Camera reconnect, health checks, file-loop state reset |
 
-Face localization is **not** face recognition or watchlist matching. ANPR is a
-best-effort demo implementation; the bundled Russian-plate Haar cascade is not
-optimized for Indian plates.
+SCRFD face localization and GFPGAN restoration are **not** face recognition or
+watchlist matching. Restored faces are generative visualizations, can contain
+invented details, and are not forensic evidence. ANPR is a best-effort demo;
+the bundled Russian-plate Haar cascade is not optimized for Indian plates.
 
 ## Architecture
 
@@ -40,14 +41,16 @@ YOLOv8 + ByteTrack
        ├── virtual-fence state
        ├── continuous loitering window
        ├── night classification
-       ├── throttled face detection
-       └── optional throttled plate OCR
+       ├── optional throttled plate OCR
+       └── bounded raw-frame handoff → SCRFD → GFPGAN worker
+                                           │
+                                           └── enhanced JPEG thumbnails
        │
        ▼
 VideoPipeline
        ├── AlertLogger → CSV
        ├── main.py → window and/or MP4
-       └── server.py → bounded MJPEG + per-client WebSocket queues
+       └── server.py → MJPEG + enhanced-face panel + per-client WebSocket queues
 ```
 
 Recorded-video analytics use media timestamps, so alerts do not change merely
@@ -97,6 +100,34 @@ export IBVAP_ENABLE_ANPR=true
 EasyOCR may download separate weights on first use. The base system does not
 need those weights.
 
+### Optional SCRFD + GFPGAN enhanced-face panel
+
+The enhancement stack is separate so it cannot destabilize a base installation.
+Install it only after the normal runtime passes `doctor.py`:
+
+```bash
+python -m pip install -r requirements-face.lock
+python scripts/download_face_models.py
+```
+
+The downloader first prints the upstream model terms and exits without changing
+anything. InsightFace-provided pretrained models are restricted to
+non-commercial research use. After reviewing the terms, either provide your own
+licensed SCRFD-compatible model with `IBVAP_SCRFD_MODEL_PATH`, or explicitly run:
+
+```bash
+python scripts/download_face_models.py --accept-model-licenses
+python scripts/doctor.py --face
+export IBVAP_ENABLE_FACE_ENHANCEMENT=true
+```
+
+The verified model files are placed under `models/` and ignored by Git. SCRFD
+and GFPGAN run on a bounded background worker; capture, object detection,
+tracking, alerts, and the raw annotated stream continue if that worker is slow
+or fails. GFPGAN never replaces pixels in the primary stream or recording. Its
+results appear only in the authenticated **Enhanced faces** panel and are
+labelled as AI-enhanced, non-forensic visualizations.
+
 ### macOS: `No module named 'cv2'`
 
 The import is named `cv2`, but its package is named `opencv-python`. Recreate
@@ -135,8 +166,11 @@ Common analytics settings:
 | `IBVAP_LOITERING_MOVEMENT_THRESHOLD_PX` | `60` | Maximum window spread |
 | `IBVAP_TRACK_MAX_OBSERVATION_GAP_SECONDS` | `1.5` | Gap that resets loitering history |
 | `IBVAP_TRACK_STALE_SECONDS` | `3` | State-retention period for missing tracks |
-| `IBVAP_ENABLE_FACE_DETECTION` | `true` | Enable face localization |
-| `IBVAP_FACE_DETECTION_INTERVAL_FRAMES` | `5` | Face-processing cadence |
+| `IBVAP_ENABLE_FACE_ENHANCEMENT` | `false` | Enable optional SCRFD + GFPGAN panel |
+| `IBVAP_FACE_ENHANCEMENT_INTERVAL_FRAMES` | `15` | Raw-frame submission cadence |
+| `IBVAP_FACE_ENHANCEMENT_MAX_FACES` | `4` | Maximum enhanced faces per update |
+| `IBVAP_FACE_ENHANCEMENT_DEVICE` | `auto` | GFPGAN device: auto, CPU, MPS, or CUDA |
+| `IBVAP_SCRFD_CONFIDENCE_THRESHOLD` | `0.6` | Minimum SCRFD detection confidence |
 | `IBVAP_ENABLE_ANPR` | `false` | Enable optional plate OCR |
 | `IBVAP_ANPR_INTERVAL_FRAMES` | `15` | Plate/OCR processing cadence |
 
@@ -193,6 +227,8 @@ Endpoints:
 - `GET /health/ready` — whether a recent frame is available
 - `GET /stream` — authenticated MJPEG stream
 - `GET /api/stats` — authenticated current statistics
+- `GET /api/faces` — authenticated enhanced-face status and image references
+- `GET /api/faces/{index}` — authenticated AI-enhanced JPEG thumbnail
 - `WS /ws` — authenticated, same-origin alerts and statistics
 
 Each browser receives its own bounded alert queue plus bounded recent history.
@@ -251,8 +287,10 @@ provides the `cv2` import on macOS.
 
 ## Operational limitations
 
-- YOLO, Haar cascades, brightness thresholds, and OCR can produce false
-  positives and false negatives. Human review remains necessary.
+- YOLO, SCRFD, plate Haar cascades, brightness thresholds, and OCR can produce
+  false positives and false negatives. Human review remains necessary.
+- GFPGAN synthesizes plausible detail rather than recovering ground truth. Keep
+  raw source footage and never use enhanced thumbnails as identity evidence.
 - Smoothed central-region brightness is still a coarse day/night classifier
   and should be calibrated per camera.
 - A pixel-coordinate fence must be calibrated whenever resolution or camera

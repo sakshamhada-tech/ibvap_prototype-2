@@ -44,6 +44,8 @@ def test_protected_routes_and_security_headers(client):
     assert response.headers["x-frame-options"] == "DENY"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     assert client.get("/api/stats").status_code == 401
+    assert client.get("/api/faces").status_code == 401
+    assert client.get("/api/faces/0").status_code == 401
     assert client.get("/", headers={"host": "evil.example"}).status_code == 400
 
 
@@ -98,6 +100,29 @@ def test_authenticated_session_access_and_logout(client):
     logged_out = client.post("/logout", follow_redirects=False)
     assert logged_out.status_code == 303
     assert client.get("/api/stats").status_code == 401
+
+
+def test_enhanced_face_panel_api_is_authenticated(client):
+    sign_in(client)
+    server.capture_service._update_face_snapshot(
+        {
+            "status": "ready",
+            "frame_number": 12,
+            "updated_monotonic": 1.0,
+            "message": None,
+            "faces": [{"track_id": 7, "confidence": 0.93, "jpeg": b"test-jpeg"}],
+        }
+    )
+
+    summary = client.get("/api/faces")
+    assert summary.status_code == 200
+    assert summary.json()["faces"][0]["track_id"] == 7
+    assert "not forensic evidence" in summary.json()["disclaimer"]
+    image = client.get(summary.json()["faces"][0]["image_url"])
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/jpeg"
+    assert image.content == b"test-jpeg"
+    assert client.get("/api/faces/99").status_code == 404
 
 
 def test_websocket_requires_origin_and_receives_bounded_history(client):

@@ -21,6 +21,13 @@ sample_data/*
 !output/.gitkeep
 !sample_data/.gitkeep
 
+# Optional face models are large and have separate upstream licenses.
+models/*.onnx
+models/*.onnx.sha256
+models/GFPGAN*.pth
+models/*.part
+models/ibvap-model-*
+
 # Editors and operating systems
 .vscode/
 .idea/

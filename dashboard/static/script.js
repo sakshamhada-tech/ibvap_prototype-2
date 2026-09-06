@@ -15,6 +15,8 @@ const el = {
   frameCounter: document.getElementById("frame-counter"),
   alertLog: document.getElementById("alert-log"),
   alertCount: document.getElementById("alert-count"),
+  enhancedFaces: document.getElementById("enhanced-faces"),
+  faceStatus: document.getElementById("face-status"),
   statPeople: document.getElementById("stat-people"),
   statVehicles: document.getElementById("stat-vehicles"),
   statAlerts: document.getElementById("stat-alerts"),
@@ -96,6 +98,59 @@ function applyStats(stats) {
   }
 }
 
+function renderFaces(snapshot) {
+  el.enhancedFaces.replaceChildren();
+  el.faceStatus.textContent = snapshot.status || "unknown";
+  const faces = Array.isArray(snapshot.faces) ? snapshot.faces : [];
+  if (faces.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "face-empty";
+    if (snapshot.status === "disabled") {
+      empty.textContent = "Face enhancement is disabled. Enable SCRFD + GFPGAN to use this panel.";
+    } else if (snapshot.status === "loading") {
+      empty.textContent = "Loading SCRFD and GFPGAN models…";
+    } else if (snapshot.status === "unavailable" || snapshot.status === "error") {
+      empty.textContent = snapshot.message || "Face enhancement is unavailable.";
+    } else {
+      empty.textContent = "No tracked faces are currently available.";
+    }
+    el.enhancedFaces.append(empty);
+    return;
+  }
+
+  for (const face of faces) {
+    const card = document.createElement("figure");
+    card.className = "face-card";
+    const image = document.createElement("img");
+    image.src = face.image_url;
+    image.alt = `AI-enhanced face for track ${face.track_id}`;
+    const caption = document.createElement("figcaption");
+    const confidence = Number(face.confidence);
+    const confidenceText = Number.isFinite(confidence) ? ` · ${confidence.toFixed(2)}` : "";
+    caption.textContent = `AI ENHANCED · #${face.track_id}${confidenceText}`;
+    card.append(image, caption);
+    el.enhancedFaces.append(card);
+  }
+}
+
+let facePollTimer;
+async function pollFaces() {
+  try {
+    const response = await fetch("/api/faces", { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.assign("/login");
+      return;
+    }
+    if (!response.ok) throw new Error(`face endpoint returned ${response.status}`);
+    renderFaces(await response.json());
+  } catch (error) {
+    el.faceStatus.textContent = "unavailable";
+    console.error("Could not update enhanced faces", error);
+  } finally {
+    facePollTimer = window.setTimeout(pollFaces, 1500);
+  }
+}
+
 let reconnectTimer;
 function connect() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -125,10 +180,14 @@ function connect() {
   socket.onerror = () => socket.close();
 }
 
-window.addEventListener("beforeunload", () => window.clearTimeout(reconnectTimer));
+window.addEventListener("beforeunload", () => {
+  window.clearTimeout(reconnectTimer);
+  window.clearTimeout(facePollTimer);
+});
 el.video.addEventListener("error", () => {
   el.connDot.dataset.state = "down";
   el.connLabel.textContent = "feed unavailable";
   el.video.parentElement.dataset.state = "down";
 });
 connect();
+pollFaces();

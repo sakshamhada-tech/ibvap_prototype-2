@@ -21,10 +21,6 @@ class Detector:
         LOGGER.info("loading YOLO model %s", config.YOLO_MODEL_PATH)
         self.model = YOLO(config.YOLO_MODEL_PATH)
 
-        self.face_cascade = None
-        if config.ENABLE_FACE_DETECTION:
-            self.face_cascade = self._load_cascade("haarcascade_frontalface_default.xml")
-
         self.plate_cascade = None
         self.ocr_reader = None
         if config.ENABLE_ANPR:
@@ -107,25 +103,6 @@ class Detector:
             reset = getattr(tracker, "reset", None)
             if callable(reset):
                 reset()
-
-    def detect_faces(self, frame, person_bbox) -> list[tuple[int, int, int, int]]:
-        if self.face_cascade is None:
-            return []
-        crop, offset = self._crop(frame, person_bbox)
-        if crop is None:
-            return []
-        x_offset, y_offset = offset
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
-        return [
-            (
-                x_offset + int(x),
-                y_offset + int(y),
-                x_offset + int(x + width),
-                y_offset + int(y + height),
-            )
-            for x, y, width, height in faces
-        ]
 
     def detect_plate(self, frame, vehicle_bbox):
         """Return ``(text, full_frame_bbox)`` for the best OCR plate candidate."""

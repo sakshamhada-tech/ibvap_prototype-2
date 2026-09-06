@@ -28,7 +28,8 @@ real camera credentials, faces, number plates, or operational footage.
   should place the app behind organizational SSO and role-based access.
 - Rotate credentials, TLS material, and session secrets regularly.
 - Protect and rotate `logs/audit.jsonl`, `logs/alerts.csv`, and recorded output.
-- Disable ANPR and face detection unless their use is authorized and necessary.
+- Disable ANPR and SCRFD/GFPGAN face enhancement unless their use is authorized
+  and necessary. Review model licenses before installation.
 
 ## Data handling
 
@@ -36,6 +37,10 @@ Alerts, footage, faces, and number plates may be sensitive personal or
 operational data. Define access, encryption, retention, deletion, incident
 response, and lawful-use policies before collecting real data. The application
 does not substitute for those organizational controls.
+
+GFPGAN output is synthesized and can change identity-relevant details. Preserve
+the raw source, restrict enhanced-thumbnail access, apply short retention, and
+never present an enhanced image as an authentic evidentiary reconstruction.
 
 ## Known scope limitations
 

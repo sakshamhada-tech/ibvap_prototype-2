@@ -1,0 +1,436 @@
+"""Failure-isolated SCRFD detection and GFPGAN restoration worker.
+
+The worker never mutates the source video frame. It emits JPEG thumbnails for
+an authenticated dashboard panel and drops work when restoration cannot keep up
+with capture.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import queue
+import threading
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+LOGGER = logging.getLogger(__name__)
+PersonBounds = tuple[int, tuple[int, int, int, int]]
+SnapshotCallback = Callable[[dict], None]
+_GFPGAN_TEMPLATE = (
+    (192.98138, 239.94708),
+    (318.90277, 240.19360),
+    (256.63416, 314.01935),
+    (201.26117, 371.41043),
+    (313.08905, 371.15118),
+)
+
+
+class FaceModelsUnavailable(RuntimeError):
+    """Raised when optional dependencies or model files are unavailable."""
+
+
+@dataclass(frozen=True)
+class _FaceJob:
+    frame: object
+    people: tuple[PersonBounds, ...]
+    frame_number: int
+    generation: int
+
+
+class FaceEnhancementService:
+    """Run SCRFD and GFPGAN off the capture thread with a one-job queue."""
+
+    def __init__(
+        self,
+        *,
+        scrfd_model_path: str,
+        gfpgan_model_path: str,
+        gfpgan_model_sha256: str,
+        confidence_threshold: float,
+        input_size: int,
+        min_face_size_px: int,
+        max_faces: int,
+        refresh_seconds: float,
+        cache_ttl_seconds: float,
+        jpeg_quality: int,
+        device: str,
+        on_snapshot: SnapshotCallback,
+    ):
+        self.scrfd_model_path = scrfd_model_path
+        self.gfpgan_model_path = gfpgan_model_path
+        self.gfpgan_model_sha256 = gfpgan_model_sha256
+        self.confidence_threshold = confidence_threshold
+        self.input_size = input_size
+        self.min_face_size_px = min_face_size_px
+        self.max_faces = max_faces
+        self.refresh_seconds = refresh_seconds
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self.jpeg_quality = jpeg_quality
+        self.device_setting = device
+        self.on_snapshot = on_snapshot
+
+        self._jobs: queue.Queue[_FaceJob] = queue.Queue(maxsize=1)
+        self._stop_event = threading.Event()
+        self._accepting_jobs = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._status = "loading"
+        self._generation_lock = threading.Lock()
+        self._generation = 0
+        self._cache: dict[tuple[int, int], tuple[float, bytes, float]] = {}
+        self._scrfd = None
+        self._gfpgan = None
+        self._torch = None
+        self._np = None
+        self._cv2 = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._publish("loading", (), frame_number=None)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="ibvap-face-enhancement",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(
+        self,
+        frame,
+        people: Sequence[PersonBounds],
+        frame_number: int,
+    ) -> bool:
+        """Queue the latest raw frame or drop it when the worker is busy."""
+        if not self._accepting_jobs.is_set() or self._stop_event.is_set():
+            return False
+        if not people:
+            self.reset()
+            return True
+        with self._generation_lock:
+            generation = self._generation
+        try:
+            self._jobs.put_nowait(
+                _FaceJob(
+                    frame=frame.copy(),
+                    people=tuple(people),
+                    frame_number=frame_number,
+                    generation=generation,
+                )
+            )
+        except queue.Full:
+            return False
+        return True
+
+    def reset(self) -> None:
+        """Invalidate queued work and cached track thumbnails after discontinuity."""
+        with self._generation_lock:
+            self._generation += 1
+        while True:
+            try:
+                self._jobs.get_nowait()
+            except queue.Empty:
+                break
+        status = "ready" if self._accepting_jobs.is_set() else self._status
+        self._publish(status, (), frame_number=None)
+
+    def close(self) -> None:
+        self._accepting_jobs.clear()
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=10)
+        if self._thread and self._thread.is_alive():
+            LOGGER.error("face-enhancement worker did not stop before timeout")
+
+    def _run(self) -> None:
+        try:
+            self._load_models()
+        except FaceModelsUnavailable as exc:
+            LOGGER.error("face enhancement unavailable: %s", exc)
+            self._publish(
+                "unavailable",
+                (),
+                frame_number=None,
+                message="Face models or optional dependencies are not installed.",
+            )
+            return
+        except Exception:
+            LOGGER.exception("face enhancement initialization failed")
+            self._publish(
+                "error",
+                (),
+                frame_number=None,
+                message="Face enhancement initialization failed; check server logs.",
+            )
+            return
+
+        self._accepting_jobs.set()
+        self._publish("ready", (), frame_number=None)
+        while not self._stop_event.is_set():
+            try:
+                job = self._jobs.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                faces = self._process(job)
+            except Exception:
+                LOGGER.exception("face enhancement failed for frame %s", job.frame_number)
+                self._publish(
+                    "error",
+                    (),
+                    frame_number=job.frame_number,
+                    message="Face enhancement failed; the primary pipeline is still running.",
+                )
+            else:
+                with self._generation_lock:
+                    is_current = job.generation == self._generation
+                if is_current:
+                    self._publish("ready", faces, frame_number=job.frame_number)
+
+    def _load_models(self) -> None:
+        scrfd_path = Path(self.scrfd_model_path)
+        gfpgan_path = Path(self.gfpgan_model_path)
+        if not scrfd_path.is_file() or not gfpgan_path.is_file():
+            raise FaceModelsUnavailable(
+                "run scripts/download_face_models.py after reviewing the model licenses"
+            )
+        _verify_hash(gfpgan_path, self.gfpgan_model_sha256)
+        _verify_sidecar_hash(scrfd_path)
+
+        try:
+            import cv2
+            import numpy as np
+            import onnxruntime
+            import torch
+            from insightface.model_zoo import get_model
+        except ImportError as exc:
+            raise FaceModelsUnavailable(
+                "install requirements-face.lock in the active environment"
+            ) from exc
+
+        from third_party.gfpgan_arch import GFPGANv1Clean
+
+        available_providers = set(onnxruntime.get_available_providers())
+        providers = [
+            provider
+            for provider in (
+                "CoreMLExecutionProvider",
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            )
+            if provider in available_providers
+        ]
+        if self.device_setting == "cpu":
+            providers = ["CPUExecutionProvider"]
+        self._scrfd = get_model(str(scrfd_path), providers=providers)
+        if self._scrfd is None or not getattr(self._scrfd, "use_kps", False):
+            raise FaceModelsUnavailable("the configured SCRFD model must provide five landmarks")
+        self._scrfd.prepare(
+            ctx_id=0,
+            input_size=(self.input_size, self.input_size),
+            det_thresh=self.confidence_threshold,
+        )
+
+        device = _select_torch_device(torch, self.device_setting)
+        restorer = GFPGANv1Clean(
+            out_size=512,
+            num_style_feat=512,
+            channel_multiplier=2,
+            decoder_load_path=None,
+            fix_decoder=False,
+            num_mlp=8,
+            input_is_latent=True,
+            different_w=True,
+            narrow=1,
+            sft_half=True,
+        )
+        checkpoint = torch.load(
+            str(gfpgan_path),
+            map_location="cpu",
+            weights_only=True,
+        )
+        parameters = checkpoint.get("params_ema") or checkpoint.get("params")
+        if not isinstance(parameters, dict):
+            raise FaceModelsUnavailable("GFPGAN checkpoint contains no model parameters")
+        restorer.load_state_dict(parameters, strict=True)
+        restorer.eval().to(device)
+
+        self._cv2 = cv2
+        self._np = np
+        self._torch = torch
+        self._gfpgan = restorer
+        self._device = device
+        LOGGER.info(
+            "face enhancement ready: SCRFD providers=%s GFPGAN device=%s",
+            providers,
+            device,
+        )
+
+    def _process(self, job: _FaceJob) -> list[dict]:
+        detections, landmarks = self._scrfd.detect(
+            job.frame,
+            input_size=(self.input_size, self.input_size),
+            max_num=0,
+        )
+        if landmarks is None:
+            return []
+
+        candidates = []
+        for detection, keypoints in zip(detections, landmarks, strict=True):
+            left, top, right, bottom, confidence = (float(value) for value in detection[:5])
+            if min(right - left, bottom - top) < self.min_face_size_px:
+                continue
+            track_id = _containing_track((left, top, right, bottom), job.people)
+            if track_id is None:
+                continue
+            candidates.append(
+                (
+                    float(confidence),
+                    (right - left) * (bottom - top),
+                    track_id,
+                    keypoints,
+                )
+            )
+        candidates.sort(reverse=True, key=lambda candidate: (candidate[0], candidate[1]))
+
+        now = time.monotonic()
+        faces = []
+        for confidence, _, track_id, keypoints in candidates[: self.max_faces]:
+            cache_key = (job.generation, track_id)
+            cached = self._cache.get(cache_key)
+            if cached is not None and now - cached[0] < self.refresh_seconds:
+                jpeg = cached[1]
+                confidence = cached[2]
+            else:
+                aligned = _align_face(job.frame, keypoints, self._cv2, self._np)
+                restored = self._restore(aligned)
+                encoded, buffer = self._cv2.imencode(
+                    ".jpg",
+                    restored,
+                    [int(self._cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+                )
+                if not encoded:
+                    continue
+                jpeg = buffer.tobytes()
+                self._cache[cache_key] = (now, jpeg, confidence)
+            faces.append(
+                {
+                    "track_id": track_id,
+                    "confidence": round(confidence, 3),
+                    "jpeg": jpeg,
+                }
+            )
+
+        cutoff = now - self.cache_ttl_seconds
+        for cache_key, (updated_at, _, _) in tuple(self._cache.items()):
+            if updated_at < cutoff or cache_key[0] != job.generation:
+                del self._cache[cache_key]
+        return faces
+
+    def _restore(self, aligned):
+        rgb = self._np.ascontiguousarray(aligned[:, :, ::-1])
+        tensor = self._torch.from_numpy(rgb.transpose(2, 0, 1)).float().div(255.0)
+        tensor = tensor.sub(0.5).div(0.5).unsqueeze(0).to(self._device)
+        with self._torch.no_grad():
+            output = self._gfpgan(tensor, return_rgb=False, weight=0.5)[0]
+        output = output.squeeze(0).detach().float().cpu().clamp_(-1, 1)
+        image = output.add(1).div(2).mul(255).round().byte().numpy().transpose(1, 2, 0)
+        return self._np.ascontiguousarray(image[:, :, ::-1])
+
+    def _publish(
+        self,
+        status: str,
+        faces: Sequence[dict],
+        *,
+        frame_number: int | None,
+        message: str | None = None,
+    ) -> None:
+        self._status = status
+        snapshot = {
+            "status": status,
+            "frame_number": frame_number,
+            "updated_monotonic": time.monotonic(),
+            "message": message,
+            "faces": list(faces),
+        }
+        try:
+            self.on_snapshot(snapshot)
+        except Exception:
+            LOGGER.exception("face snapshot callback failed")
+
+
+def _select_torch_device(torch, setting: str):
+    if setting == "cpu":
+        return torch.device("cpu")
+    if setting == "cuda":
+        if not torch.cuda.is_available():
+            raise FaceModelsUnavailable("CUDA was requested but is unavailable")
+        return torch.device("cuda")
+    if setting == "mps":
+        if not torch.backends.mps.is_available():
+            raise FaceModelsUnavailable("MPS was requested but is unavailable")
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _verify_hash(path: Path, expected: str) -> None:
+    actual = _sha256(path)
+    if actual != expected:
+        raise FaceModelsUnavailable(
+            f"checksum mismatch for {path.name}; expected {expected}, got {actual}"
+        )
+
+
+def _verify_sidecar_hash(path: Path) -> None:
+    sidecar = path.with_suffix(path.suffix + ".sha256")
+    if not sidecar.is_file():
+        LOGGER.warning("no checksum sidecar found for %s", path.name)
+        return
+    expected = sidecar.read_text(encoding="ascii").strip().split()[0].lower()
+    if len(expected) != 64 or any(character not in "0123456789abcdef" for character in expected):
+        raise FaceModelsUnavailable(f"invalid checksum sidecar for {path.name}")
+    _verify_hash(path, expected)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as model_file:
+        for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _containing_track(
+    face_box: tuple[float, float, float, float],
+    people: Sequence[PersonBounds],
+) -> int | None:
+    center_x = (face_box[0] + face_box[2]) / 2
+    center_y = (face_box[1] + face_box[3]) / 2
+    containing = [
+        (max(1, (box[2] - box[0]) * (box[3] - box[1])), track_id)
+        for track_id, box in people
+        if box[0] <= center_x <= box[2] and box[1] <= center_y <= box[3]
+    ]
+    return min(containing)[1] if containing else None
+
+
+def _align_face(frame, landmarks, cv2, np):
+    source = np.asarray(landmarks, dtype=np.float32)
+    destination = np.asarray(_GFPGAN_TEMPLATE, dtype=np.float32)
+    matrix, _ = cv2.estimateAffinePartial2D(source, destination, method=cv2.LMEDS)
+    if matrix is None:
+        raise RuntimeError("could not align SCRFD facial landmarks")
+    return cv2.warpAffine(
+        frame,
+        matrix,
+        (512, 512),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )

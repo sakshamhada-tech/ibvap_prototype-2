@@ -1,0 +1,19 @@
+{
+  "scrfd": {
+    "name": "SCRFD 2.5G KPS",
+    "archive_url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_m.zip",
+    "archive_sha256": "d98264bd8f2dc75cbc2ddce2a14e636e02bb857b3051c234b737bf3b614edca9",
+    "archive_size_bytes": 275951529,
+    "archive_member_basename": "det_2.5g.onnx",
+    "destination": "scrfd_2.5g.onnx",
+    "license_note": "InsightFace-provided pretrained models are limited to non-commercial research use unless separately licensed."
+  },
+  "gfpgan": {
+    "name": "GFPGAN v1.4",
+    "url": "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth",
+    "sha256": "e2cd4703ab14f4d01fd1383a8a8b266f9a5833dacee8e6a79d3bf21a1b6be5ad",
+    "size_bytes": 348632874,
+    "destination": "GFPGANv1.4.pth",
+    "license_note": "GFPGAN code and project model are published under Apache-2.0; retain upstream notices."
+  }
+}
