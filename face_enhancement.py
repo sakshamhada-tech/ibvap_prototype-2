@@ -52,6 +52,9 @@ class FaceEnhancementService:
         confidence_threshold: float,
         input_size: int,
         min_face_size_px: int,
+        restoration_min_face_size_px: int,
+        restoration_min_sharpness: float,
+        restoration_blend_weight: float,
         max_faces: int,
         refresh_seconds: float,
         cache_ttl_seconds: float,
@@ -65,6 +68,9 @@ class FaceEnhancementService:
         self.confidence_threshold = confidence_threshold
         self.input_size = input_size
         self.min_face_size_px = min_face_size_px
+        self.restoration_min_face_size_px = restoration_min_face_size_px
+        self.restoration_min_sharpness = restoration_min_sharpness
+        self.restoration_blend_weight = restoration_blend_weight
         self.max_faces = max_faces
         self.refresh_seconds = refresh_seconds
         self.cache_ttl_seconds = cache_ttl_seconds
@@ -79,7 +85,7 @@ class FaceEnhancementService:
         self._status = "loading"
         self._generation_lock = threading.Lock()
         self._generation = 0
-        self._cache: dict[tuple[int, int], tuple[float, bytes, float]] = {}
+        self._cache: dict[tuple[int, int], tuple[float, dict]] = {}
         self._scrfd = None
         self._gfpgan = None
         self._torch = None
@@ -281,61 +287,105 @@ class FaceEnhancementService:
         candidates = []
         for detection, keypoints in zip(detections, landmarks, strict=True):
             left, top, right, bottom, confidence = (float(value) for value in detection[:5])
-            if min(right - left, bottom - top) < self.min_face_size_px:
+            source_size = min(right - left, bottom - top)
+            if confidence < self.confidence_threshold or source_size < self.min_face_size_px:
                 continue
-            track_id = _containing_track((left, top, right, bottom), job.people)
+            face_box = (left, top, right, bottom)
+            track_id = _containing_track(face_box, job.people)
             if track_id is None:
                 continue
             candidates.append(
                 (
-                    float(confidence),
+                    confidence,
                     (right - left) * (bottom - top),
                     track_id,
                     keypoints,
+                    face_box,
+                    source_size,
                 )
             )
         candidates.sort(reverse=True, key=lambda candidate: (candidate[0], candidate[1]))
 
         now = time.monotonic()
         faces = []
-        for confidence, _, track_id, keypoints in candidates[: self.max_faces]:
+        for confidence, _, track_id, keypoints, face_box, source_size in candidates[
+            : self.max_faces
+        ]:
             cache_key = (job.generation, track_id)
             cached = self._cache.get(cache_key)
             if cached is not None and now - cached[0] < self.refresh_seconds:
-                jpeg = cached[1]
-                confidence = cached[2]
+                face = dict(cached[1])
             else:
-                aligned = _align_face(job.frame, keypoints, self._cv2, self._np)
-                restored = self._restore(aligned)
-                encoded, buffer = self._cv2.imencode(
-                    ".jpg",
-                    restored,
-                    [int(self._cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
-                )
-                if not encoded:
+                try:
+                    aligned = _align_face(job.frame, keypoints, self._cv2, self._np)
+                except Exception:
+                    LOGGER.exception("could not align face for track %s", track_id)
                     continue
-                jpeg = buffer.tobytes()
-                self._cache[cache_key] = (now, jpeg, confidence)
-            faces.append(
-                {
+                source_jpeg = self._encode_jpeg(aligned)
+                if source_jpeg is None:
+                    continue
+
+                sharpness = _source_sharpness(job.frame, face_box, self._cv2)
+                reason = _restoration_rejection_reason(
+                    source_size,
+                    sharpness,
+                    self.restoration_min_face_size_px,
+                    self.restoration_min_sharpness,
+                )
+                review_jpeg = None
+                if reason is None:
+                    try:
+                        restored = self._restore(aligned)
+                        review = self._cv2.addWeighted(
+                            aligned,
+                            1.0 - self.restoration_blend_weight,
+                            restored,
+                            self.restoration_blend_weight,
+                            0.0,
+                        )
+                        review_jpeg = self._encode_jpeg(review)
+                        if review_jpeg is None:
+                            reason = "restoration_encoding_failed"
+                    except Exception:
+                        LOGGER.exception("GFPGAN restoration failed for track %s", track_id)
+                        reason = "restoration_failed"
+
+                face = {
                     "track_id": track_id,
                     "confidence": round(confidence, 3),
-                    "jpeg": jpeg,
+                    "source_face_size_px": round(source_size, 1),
+                    "source_sharpness": round(sharpness, 1),
+                    "restoration_status": "blended" if review_jpeg is not None else "rejected",
+                    "quality_reason": reason,
+                    "blend_weight": (
+                        self.restoration_blend_weight if review_jpeg is not None else None
+                    ),
+                    "source_jpeg": source_jpeg,
+                    "jpeg": review_jpeg,
                 }
-            )
+                self._cache[cache_key] = (now, face)
+            faces.append(face)
 
         cutoff = now - self.cache_ttl_seconds
-        for cache_key, (updated_at, _, _) in tuple(self._cache.items()):
+        for cache_key, (updated_at, _) in tuple(self._cache.items()):
             if updated_at < cutoff or cache_key[0] != job.generation:
                 del self._cache[cache_key]
         return faces
+
+    def _encode_jpeg(self, image) -> bytes | None:
+        encoded, buffer = self._cv2.imencode(
+            ".jpg",
+            image,
+            [int(self._cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+        )
+        return buffer.tobytes() if encoded else None
 
     def _restore(self, aligned):
         rgb = self._np.ascontiguousarray(aligned[:, :, ::-1])
         tensor = self._torch.from_numpy(rgb.transpose(2, 0, 1)).float().div(255.0)
         tensor = tensor.sub(0.5).div(0.5).unsqueeze(0).to(self._device)
         with self._torch.no_grad():
-            output = self._gfpgan(tensor, return_rgb=False, weight=0.5)[0]
+            output = self._gfpgan(tensor, return_rgb=False)[0]
         output = output.squeeze(0).detach().float().cpu().clamp_(-1, 1)
         image = output.add(1).div(2).mul(255).round().byte().numpy().transpose(1, 2, 0)
         return self._np.ascontiguousarray(image[:, :, ::-1])
@@ -405,6 +455,34 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _source_sharpness(frame, face_box: tuple[float, float, float, float], cv2) -> float:
+    """Return variance-of-Laplacian sharpness from the detected source pixels."""
+    height, width = frame.shape[:2]
+    left = max(0, min(width, int(face_box[0])))
+    top = max(0, min(height, int(face_box[1])))
+    right = max(0, min(width, int(face_box[2] + 0.999)))
+    bottom = max(0, min(height, int(face_box[3] + 0.999)))
+    if right <= left or bottom <= top:
+        return 0.0
+    source_crop = frame[top:bottom, left:right]
+    if len(source_crop.shape) == 3:
+        source_crop = cv2.cvtColor(source_crop, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(source_crop, cv2.CV_64F).var())
+
+
+def _restoration_rejection_reason(
+    source_size: float,
+    sharpness: float,
+    minimum_size: int,
+    minimum_sharpness: float,
+) -> str | None:
+    if source_size < minimum_size:
+        return "source_face_too_small"
+    if sharpness < minimum_sharpness:
+        return "source_face_too_blurry"
+    return None
 
 
 def _containing_track(

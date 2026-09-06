@@ -1,6 +1,7 @@
 import hashlib
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import face_enhancement
 from face_enhancement import FaceEnhancementService
@@ -18,7 +19,10 @@ def make_service(tmp_path, callback):
         gfpgan_model_sha256="0" * 64,
         confidence_threshold=0.6,
         input_size=640,
-        min_face_size_px=24,
+        min_face_size_px=32,
+        restoration_min_face_size_px=80,
+        restoration_min_sharpness=30,
+        restoration_blend_weight=0.25,
         max_faces=4,
         refresh_seconds=2,
         cache_ttl_seconds=10,
@@ -92,3 +96,73 @@ def test_model_checksum_sidecar_is_enforced(tmp_path):
         assert "checksum mismatch" in str(exc)
     else:
         raise AssertionError("tampered model was accepted")
+
+
+def _prepare_process_service(monkeypatch, tmp_path, detection, *, sharpness):
+    service = make_service(tmp_path, lambda _snapshot: None)
+    service._scrfd = SimpleNamespace(detect=lambda *_args, **_kwargs: ([detection], [[(0, 0)] * 5]))
+    aligned = object()
+    monkeypatch.setattr(face_enhancement, "_align_face", lambda *_args: aligned)
+    monkeypatch.setattr(face_enhancement, "_source_sharpness", lambda *_args: sharpness)
+    service._cv2 = SimpleNamespace(
+        IMWRITE_JPEG_QUALITY=95,
+        imencode=lambda *_args: (True, SimpleNamespace(tobytes=lambda: b"jpeg")),
+        addWeighted=lambda source, source_weight, restored, restored_weight, gamma: (
+            source,
+            source_weight,
+            restored,
+            restored_weight,
+            gamma,
+        ),
+    )
+    service._np = object()
+    return service
+
+
+def test_tiny_source_face_is_source_only_and_never_restored(monkeypatch, tmp_path):
+    service = _prepare_process_service(
+        monkeypatch,
+        tmp_path,
+        [10, 10, 70, 70, 0.9],
+        sharpness=100,
+    )
+    monkeypatch.setattr(
+        service,
+        "_restore",
+        lambda _aligned: (_ for _ in ()).throw(AssertionError("must not restore")),
+    )
+    job = SimpleNamespace(frame=object(), people=((7, (0, 0, 100, 100)),), generation=0)
+
+    faces = service._process(job)
+
+    assert faces[0]["source_jpeg"] == b"jpeg"
+    assert faces[0]["jpeg"] is None
+    assert faces[0]["restoration_status"] == "rejected"
+    assert faces[0]["quality_reason"] == "source_face_too_small"
+
+
+def test_restoration_quality_gate_rejects_blurry_sources():
+    assert (
+        face_enhancement._restoration_rejection_reason(100, 10, 80, 30) == "source_face_too_blurry"
+    )
+    assert face_enhancement._restoration_rejection_reason(100, 50, 80, 30) is None
+
+
+def test_adequate_source_face_uses_conservative_identity_blend(monkeypatch, tmp_path):
+    service = _prepare_process_service(
+        monkeypatch,
+        tmp_path,
+        [10, 10, 110, 110, 0.95],
+        sharpness=100,
+    )
+    restored = object()
+    monkeypatch.setattr(service, "_restore", lambda _aligned: restored)
+    job = SimpleNamespace(frame=object(), people=((8, (0, 0, 150, 150)),), generation=0)
+
+    faces = service._process(job)
+
+    assert faces[0]["source_jpeg"] == b"jpeg"
+    assert faces[0]["jpeg"] == b"jpeg"
+    assert faces[0]["restoration_status"] == "blended"
+    assert faces[0]["quality_reason"] is None
+    assert faces[0]["blend_weight"] == 0.25

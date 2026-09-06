@@ -45,13 +45,13 @@
     <div class="console__rail">
       <section class="panel panel--faces">
         <div class="panel__label">
-          <span>Enhanced faces</span>
+          <span>Face source / AI review</span>
           <span id="face-status" class="mono muted">checking</span>
         </div>
         <div id="enhanced-faces" class="enhanced-faces" aria-live="polite">
           <p class="face-empty">Waiting for the face-enhancement service.</p>
         </div>
-        <p class="enhancement-notice">AI-enhanced visualization · not forensic evidence</p>
+        <p class="enhancement-notice">Always compare with source. GFPGAN may invent identity details and cannot recover detail absent from tiny or blurred faces. Not forensic evidence.</p>
       </section>
 
       <section class="panel panel--log">
@@ -86,6 +86,10 @@
     <div class="stat">
       <span class="stat__value mono" id="stat-fps">0.0</span>
       <span class="stat__label">Recent processing fps</span>
+    </div>
+    <div class="stat">
+      <span class="stat__value mono" id="stat-recording">pending</span>
+      <span class="stat__label">MP4 recording</span>
     </div>
   </footer>
 </div>

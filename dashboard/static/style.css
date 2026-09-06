@@ -239,33 +239,70 @@ body {
 /* -------------------------------------------------- enhanced faces */
 
 .enhanced-faces {
-  min-height: 112px;
-  max-height: 226px;
+  min-height: 150px;
+  max-height: 340px;
   padding: 8px;
   overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
 .face-card {
-  margin: 0;
   min-width: 0;
   border: 1px solid var(--hairline);
   background: #050705;
 }
 
-.face-card img {
+.face-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--hairline);
+}
+
+.face-variant {
+  margin: 0;
+  min-width: 0;
+  background: #050705;
+}
+
+.face-variant img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   display: block;
 }
 
-.face-card figcaption {
+.face-variant figcaption,
+.face-rejected {
+  color: var(--text-muted);
+  font: 9px var(--font-mono);
+}
+
+.face-variant figcaption {
+  padding: 5px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.face-rejected {
+  min-height: 0;
+  padding: 12px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  line-height: 1.5;
+  color: var(--signal-red);
+  background: #090505;
+}
+
+.face-details {
+  margin: 0;
   padding: 5px 6px;
   color: var(--text-muted);
-  font: 10px var(--font-mono);
+  font-size: 9px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
