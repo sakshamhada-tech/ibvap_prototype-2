@@ -175,6 +175,33 @@ ALERT_COOLDOWN_SECONDS = _env_float("IBVAP_ALERT_COOLDOWN_SECONDS", 1.0, minimum
 ALERT_STATE_TTL_SECONDS = _env_float("IBVAP_ALERT_STATE_TTL_SECONDS", 300.0, minimum=1.0)
 RECENT_ALERT_DISPLAY_SECONDS = _env_float("IBVAP_RECENT_ALERT_DISPLAY_SECONDS", 8.0, minimum=0.1)
 MAX_RECENT_ALERTS = _env_int("IBVAP_MAX_RECENT_ALERTS", 20, minimum=1)
+ENABLE_AUDIBLE_ALARMS = _env_bool("IBVAP_ENABLE_AUDIBLE_ALARMS", True)
+AUDIBLE_ALARM_EVENTS = tuple(
+    event.upper()
+    for event in _env_csv(
+        "IBVAP_AUDIBLE_ALARM_EVENTS",
+        "VIRTUAL_FENCE_INTRUSION,SUSPICIOUS_LOITERING",
+    )
+)
+_known_alarm_events = {
+    "VIRTUAL_FENCE_INTRUSION",
+    "SUSPICIOUS_LOITERING",
+    "NIGHT_MOVEMENT",
+    "ANPR_READ",
+}
+_unknown_alarm_events = set(AUDIBLE_ALARM_EVENTS) - _known_alarm_events
+if _unknown_alarm_events:
+    raise ValueError(
+        "IBVAP_AUDIBLE_ALARM_EVENTS contains unsupported values: "
+        + ", ".join(sorted(_unknown_alarm_events))
+    )
+AUDIBLE_ALARM_VOLUME = _env_float("IBVAP_AUDIBLE_ALARM_VOLUME", 0.75, minimum=0.0)
+if AUDIBLE_ALARM_VOLUME > 1.0:
+    raise ValueError("IBVAP_AUDIBLE_ALARM_VOLUME must be <= 1")
+AUDIBLE_ALARM_COOLDOWN_SECONDS = _env_float(
+    "IBVAP_AUDIBLE_ALARM_COOLDOWN_SECONDS", 5.0, minimum=0.0
+)
+AUDIBLE_ALARM_QUEUE_SIZE = _env_int("IBVAP_AUDIBLE_ALARM_QUEUE_SIZE", 8, minimum=1)
 SAVE_ANNOTATED_VIDEO = _env_bool("IBVAP_SAVE_ANNOTATED_VIDEO", True)
 ANNOTATED_VIDEO_PATH = _resolve_path(
     os.getenv("IBVAP_ANNOTATED_VIDEO_PATH", "output/annotated_output.mp4")
