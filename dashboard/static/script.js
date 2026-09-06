@@ -57,10 +57,25 @@ function renderAlert(alert) {
   type.textContent = `${meta.label}${alert.track_id != null ? ` · #${alert.track_id}` : ""}`;
   const eventTime = document.createElement("span");
   eventTime.className = "mono muted";
-  const timestamp = typeof alert.timestamp === "string" ? alert.timestamp : "";
-  eventTime.textContent = timestamp.includes("T")
-    ? timestamp.split("T")[1].replace(/\+.*/, "")
-    : timestamp.split(" ")[1] || timestamp;
+  const timestamp =
+    typeof alert.timestamp_utc === "string"
+      ? alert.timestamp_utc
+      : typeof alert.timestamp === "string"
+        ? alert.timestamp
+        : "";
+  const instant = new Date(timestamp);
+  if (timestamp && !Number.isNaN(instant.getTime())) {
+    eventTime.textContent = instant.toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    eventTime.dateTime = instant.toISOString();
+    eventTime.title = `System time: ${instant.toLocaleString()} · UTC: ${instant.toISOString()}`;
+  } else {
+    eventTime.textContent = timestamp;
+  }
   top.append(type, eventTime);
 
   const detail = document.createElement("div");

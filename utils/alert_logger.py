@@ -9,9 +9,9 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
 
 from utils.log_rotation import exceeds_limit, rotate_file
+from utils.timestamps import current_wall_times
 
 LOGGER = logging.getLogger(__name__)
 AlertCallback = Callable[[dict], None]
@@ -26,6 +26,7 @@ class AlertLogger:
     """
 
     HEADER = [
+        "timestamp_local",
         "timestamp_utc",
         "source_time_seconds",
         "alert_type",
@@ -58,6 +59,19 @@ class AlertLogger:
         self._open_file()
 
     def _open_file(self) -> None:
+        if os.path.exists(self.csv_path) and os.path.getsize(self.csv_path) > 0:
+            try:
+                with open(self.csv_path, newline="", encoding="utf-8") as existing_file:
+                    existing_header = next(csv.reader(existing_file), None)
+            except OSError:
+                LOGGER.exception("could not inspect alert CSV schema: %s", self.csv_path)
+                raise
+            if existing_header != self.HEADER:
+                LOGGER.warning(
+                    "rotating alert CSV with an older schema: %s",
+                    self.csv_path,
+                )
+                rotate_file(self.csv_path, self.backup_count)
         needs_header = not os.path.exists(self.csv_path) or os.path.getsize(self.csv_path) == 0
         # The handle intentionally stays open until close() so every event can
         # be synchronously flushed without reopening the file each frame.
@@ -91,9 +105,12 @@ class AlertLogger:
                 return False
             self._recent_alerts[key] = event_time
 
-            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            timestamp_local, timestamp_utc = current_wall_times()
             alert = {
-                "timestamp": timestamp,
+                # Keep ``timestamp`` as the canonical UTC compatibility field.
+                "timestamp": timestamp_utc,
+                "timestamp_local": timestamp_local,
+                "timestamp_utc": timestamp_utc,
                 "source_time_seconds": round(event_time, 3),
                 "alert_type": alert_type,
                 "track_id": track_id,
@@ -101,7 +118,8 @@ class AlertLogger:
                 "frame_number": frame_number,
             }
             row = [
-                timestamp,
+                timestamp_local,
+                timestamp_utc,
                 alert["source_time_seconds"],
                 alert_type,
                 track_id,
