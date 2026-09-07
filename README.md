@@ -415,7 +415,13 @@ network request:
 
 ```bash
 python scripts/download_anpr_model.py
-# Only after independent review:
+```
+
+That terms-only invocation intentionally makes no network request and exits with
+status 2. After independent review, run these comment-free commands in the same
+terminal (interactive zsh does not always treat pasted `#` lines as comments):
+
+```bash
 python scripts/download_anpr_model.py --accept-research-model-risks
 python scripts/doctor.py --anpr
 export IBVAP_ENABLE_ANPR=true
@@ -841,6 +847,11 @@ camera distance, focus, lighting, exposure, and source resolution instead of
 using a stronger generative blend.
 
 ### ANPR does not start or does not emit a plate
+
+If `scripts/download_anpr_model.py` is missing or `doctor.py` does not recognize
+`--anpr`, the checkout predates the regional ANPR implementation. Update to a
+revision containing the feature before retrying; installing EasyOCR alone does
+not add repository scripts or options.
 
 Run `python scripts/doctor.py --anpr`. Startup intentionally fails when ANPR is
 enabled but the detector checkpoint is absent, has no configured SHA-256, or
