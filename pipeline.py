@@ -14,6 +14,7 @@ import config
 from detector import Detector
 from face_enhancement import FaceEnhancementService
 from utils.alert_logger import AlertLogger
+from utils.anpr import PlateConsensusTracker
 from utils.zones import LoiteringDetector, LoiteringState, VirtualFence
 
 LOGGER = logging.getLogger(__name__)
@@ -152,6 +153,15 @@ class VideoPipeline:
             max_observation_gap_seconds=config.TRACK_MAX_OBSERVATION_GAP_SECONDS,
             stale_after_seconds=config.TRACK_STALE_SECONDS,
         )
+        self.anpr_consensus = PlateConsensusTracker(
+            min_reads=config.ANPR_MIN_CONSENSUS_READS,
+            window_seconds=config.ANPR_CONSENSUS_WINDOW_SECONDS,
+            min_weight_ratio=config.ANPR_MIN_CONSENSUS_WEIGHT_RATIO,
+            min_ocr_confidence=config.ANPR_MIN_OCR_CONFIDENCE,
+            state_ttl_seconds=config.ANPR_STATE_TTL_SECONDS,
+            max_observations=config.ANPR_MAX_OBSERVATIONS_PER_TRACK,
+        )
+        self._stable_plates = {}
         self.alert_logger = AlertLogger(
             config.ALERT_LOG_CSV,
             on_alert=on_alert,
@@ -271,21 +281,34 @@ class VideoPipeline:
             if (
                 config.ENABLE_ANPR
                 and class_name != "person"
+                and track_id is not None
                 and self._scheduled(track_id, config.ANPR_INTERVAL_FRAMES)
             ):
-                plate_text, plate_bbox = self.detector.detect_plate(frame, detection["bbox"])
-                if (
-                    plate_text
-                    and track_id is not None
-                    and self.alert_logger.log(
-                        "ANPR_READ",
-                        track_id,
-                        plate_text,
-                        self.frame_number,
-                        source_time=timestamp,
-                    )
-                ):
-                    self._remember_alert(f"PLATE: {plate_text}")
+                observation = self.detector.detect_plate_observation(frame, detection["bbox"])
+                if observation is not None:
+                    consensus = self.anpr_consensus.add(track_id, observation, timestamp)
+                    if consensus is not None:
+                        self._stable_plates[track_id] = (
+                            consensus.text,
+                            self._relative_bbox(observation.bbox, detection["bbox"]),
+                        )
+                        if consensus.newly_stable and self.alert_logger.log(
+                            "ANPR_READ",
+                            track_id,
+                            f"{consensus.text} ({consensus.region})",
+                            self.frame_number,
+                            source_time=timestamp,
+                        ):
+                            self._remember_alert(f"PLATE: {consensus.text}")
+                    elif track_id in self._stable_plates:
+                        stable_text, _ = self._stable_plates[track_id]
+                        self._stable_plates[track_id] = (
+                            stable_text,
+                            self._relative_bbox(observation.bbox, detection["bbox"]),
+                        )
+            if track_id is not None and track_id in self._stable_plates:
+                plate_text, relative_bbox = self._stable_plates[track_id]
+                plate_bbox = self._project_bbox(relative_bbox, detection["bbox"])
 
             if self.show_overlays:
                 draw_detection(frame, detection, loitering.active)
@@ -296,6 +319,8 @@ class VideoPipeline:
 
         self.fence.expire(timestamp)
         self.loiter_detector.expire(timestamp)
+        for expired_track_id in self.anpr_consensus.expire(timestamp):
+            self._stable_plates.pop(expired_track_id, None)
         now = time.monotonic()
         self._fps_samples.append(now)
         fps = self._recent_fps()
@@ -337,6 +362,32 @@ class VideoPipeline:
                 height,
             )
 
+    @staticmethod
+    def _relative_bbox(plate_bbox, vehicle_bbox) -> tuple[float, float, float, float]:
+        vehicle_x1, vehicle_y1, vehicle_x2, vehicle_y2 = vehicle_bbox
+        width = max(vehicle_x2 - vehicle_x1, 1)
+        height = max(vehicle_y2 - vehicle_y1, 1)
+        plate_x1, plate_y1, plate_x2, plate_y2 = plate_bbox
+        return (
+            (plate_x1 - vehicle_x1) / width,
+            (plate_y1 - vehicle_y1) / height,
+            (plate_x2 - vehicle_x1) / width,
+            (plate_y2 - vehicle_y1) / height,
+        )
+
+    @staticmethod
+    def _project_bbox(relative_bbox, vehicle_bbox) -> tuple[int, int, int, int]:
+        vehicle_x1, vehicle_y1, vehicle_x2, vehicle_y2 = vehicle_bbox
+        width = max(vehicle_x2 - vehicle_x1, 1)
+        height = max(vehicle_y2 - vehicle_y1, 1)
+        rx1, ry1, rx2, ry2 = relative_bbox
+        return (
+            int(vehicle_x1 + rx1 * width),
+            int(vehicle_y1 + ry1 * height),
+            int(vehicle_x1 + rx2 * width),
+            int(vehicle_y1 + ry2 * height),
+        )
+
     def _scheduled(self, track_id: int | None, interval: int) -> bool:
         offset = 0 if track_id is None else track_id
         return (self.frame_number + offset) % interval == 0
@@ -362,6 +413,8 @@ class VideoPipeline:
             self.face_enhancer.reset()
         self.fence.reset()
         self.loiter_detector.reset()
+        self.anpr_consensus.reset()
+        self._stable_plates.clear()
         self.alert_logger.reset_cooldowns()
         self._recent_alerts.clear()
         self._fps_samples.clear()

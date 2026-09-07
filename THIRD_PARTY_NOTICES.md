@@ -15,6 +15,23 @@ redistributing this repository or using it in a network service or commercial
 product. Obtain an appropriate commercial license where required. This notice
 is not legal advice.
 
+## Optional Indian plate-detector candidate
+
+The regional ANPR path can load an external Indian YOLOv8 detector checkpoint.
+No ANPR checkpoint is distributed in this repository. The reviewed candidate,
+its pinned source commit, byte size, SHA-256, and unresolved issues are recorded
+in `models/ANPR_MODEL_SOURCES.json`. Its downloader requires explicit
+`--accept-research-model-risks` acknowledgement before making a network request.
+
+The source repository includes Apache-2.0 text, but no separate checkpoint
+licence/model card, training-data provenance, credible held-out deployment
+benchmark, or proprietary-use grant was found. The checkpoint also runs through
+Ultralytics, whose AGPL-3.0/commercial terms require separate review. Treat the
+candidate as **research/evaluation only** until legal, data-governance, accuracy,
+and security review are complete. EasyOCR code and its separately downloaded OCR
+weights remain governed by their own upstream terms. This notice is not legal
+advice.
+
 ## Optional SCRFD and GFPGAN models
 
 The optional identity-first face-review panel uses SCRFD code through InsightFace.

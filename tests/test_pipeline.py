@@ -1,5 +1,8 @@
+import hashlib
 import sys
 import types
+
+import pytest
 
 # The analytics orchestration is tested with lightweight detector/CV doubles;
 # CI does not need to download PyTorch merely to exercise state transitions.
@@ -24,6 +27,8 @@ sys.modules.setdefault("ultralytics", fake_ultralytics)
 
 import config  # noqa: E402
 import pipeline  # noqa: E402
+from detector import Detector as ActualDetector  # noqa: E402
+from utils.anpr import PlateObservation  # noqa: E402
 
 
 class FakeFrame:
@@ -76,6 +81,28 @@ class FakeDetector:
 
     def reset_tracking(self):
         self.reset_calls += 1
+
+
+class FakeVehicleDetector(FakeDetector):
+    def __init__(self):
+        super().__init__()
+        self.observations = []
+
+    def track_frame(self, _frame):
+        x1, y1, x2, y2 = self.bbox
+        return [
+            {
+                "track_id": 5,
+                "class_id": 2,
+                "class_name": "car",
+                "bbox": self.bbox,
+                "centroid": ((x1 + x2) / 2, (y1 + y2) / 2),
+                "conf": 0.9,
+            }
+        ]
+
+    def detect_plate_observation(self, _frame, _bbox):
+        return self.observations.pop(0) if self.observations else None
 
 
 def configure_pipeline(monkeypatch, tmp_path):
@@ -158,3 +185,56 @@ def test_pipeline_resets_tracking_when_source_time_moves_backwards(monkeypatch, 
     assert video_pipeline.detector.reset_calls == 1
     assert video_pipeline.loiter_detector.tracked_count == 1
     video_pipeline.close()
+
+
+def test_pipeline_emits_only_stable_tracked_anpr_reads_and_resets_state(monkeypatch, tmp_path):
+    configure_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline, "Detector", FakeVehicleDetector)
+    monkeypatch.setattr(config, "ENABLE_ANPR", True)
+    monkeypatch.setattr(config, "ANPR_INTERVAL_FRAMES", 1)
+    monkeypatch.setattr(config, "ANPR_MIN_CONSENSUS_READS", 3)
+    monkeypatch.setattr(config, "ANPR_CONSENSUS_WINDOW_SECONDS", 3)
+    monkeypatch.setattr(config, "ANPR_MIN_CONSENSUS_WEIGHT_RATIO", 0.6)
+    monkeypatch.setattr(config, "ANPR_MIN_OCR_CONFIDENCE", 0.5)
+    monkeypatch.setattr(config, "ANPR_MAX_OBSERVATIONS_PER_TRACK", 6)
+    monkeypatch.setattr(config, "ANPR_STATE_TTL_SECONDS", 5)
+    alerts = []
+    video_pipeline = pipeline.VideoPipeline(on_alert=alerts.append, show_overlays=False)
+    plate = PlateObservation("KA01AB1234", (4, 10, 18, 16), "IN", 0.9, 0.8, 100)
+    video_pipeline.detector.observations = [plate, plate, plate, plate]
+
+    for timestamp in (0, 0.5):
+        video_pipeline.process_frame(FakeFrame(), source_time=timestamp)
+    assert not [alert for alert in alerts if alert["alert_type"] == "ANPR_READ"]
+
+    video_pipeline.process_frame(FakeFrame(), source_time=1)
+    video_pipeline.process_frame(FakeFrame(), source_time=1.5)
+    anpr_alerts = [alert for alert in alerts if alert["alert_type"] == "ANPR_READ"]
+    assert len(anpr_alerts) == 1
+    assert anpr_alerts[0]["details"] == "KA01AB1234 (IN)"
+    assert video_pipeline._stable_plates[5][0] == "KA01AB1234"
+
+    video_pipeline.reset_tracking()
+    assert video_pipeline.anpr_consensus.tracked_count == 0
+    assert video_pipeline._stable_plates == {}
+    video_pipeline.close()
+
+
+def test_relative_plate_bbox_follows_a_moving_vehicle():
+    relative = pipeline.VideoPipeline._relative_bbox((20, 30, 40, 40), (10, 10, 50, 50))
+    assert pipeline.VideoPipeline._project_bbox(relative, (30, 20, 110, 100)) == (50, 60, 90, 80)
+
+
+def test_anpr_model_file_requires_presence_and_matching_sha256(tmp_path):
+    model_path = tmp_path / "plate.pt"
+    with pytest.raises(RuntimeError, match="missing"):
+        ActualDetector._verify_model_file(model_path, "0" * 64, "ANPR", required=True)
+
+    model_path.write_bytes(b"reviewed checkpoint")
+    with pytest.raises(RuntimeError, match="requires a configured SHA-256"):
+        ActualDetector._verify_model_file(model_path, "", "ANPR", required=True)
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        ActualDetector._verify_model_file(model_path, "0" * 64, "ANPR", required=True)
+
+    digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    ActualDetector._verify_model_file(model_path, digest, "ANPR", required=True)

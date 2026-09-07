@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-09-07",
+  "models": [
+    {
+      "id": "vipulcj-indian-yolov8n-research-candidate",
+      "purpose": "Indian licence-plate localization only; OCR is separate",
+      "repository": "https://github.com/vipulcj/AUTOMATIC-LICENSE-PLATE-RECOGNITION-FOR-INDIAN-VEHICLES-",
+      "source_commit": "1ec0e751a3d3ce1e4b81f3d809e7c97089c7b834",
+      "source_file": "INPD_more_accuracy_n.pt",
+      "download_url": "https://raw.githubusercontent.com/vipulcj/AUTOMATIC-LICENSE-PLATE-RECOGNITION-FOR-INDIAN-VEHICLES-/1ec0e751a3d3ce1e4b81f3d809e7c97089c7b834/INPD_more_accuracy_n.pt",
+      "local_default": "models/indian_plate_yolov8n.pt",
+      "bytes": 6230819,
+      "sha256": "897ad71e4c94cb69aabdb6ba8fbd4bbecfad239fde6bc386ae04c650411787b4",
+      "repository_license_file": "Apache-2.0",
+      "approval": "research-evaluation-only",
+      "unresolved": [
+        "No separate licence or model card was found for the checkpoint",
+        "Training-dataset provenance and consent/redistribution rights are undocumented",
+        "No credible held-out benchmark was found for representative deployment footage",
+        "Ultralytics AGPL-3.0 or enterprise licensing must be reviewed for the intended use",
+        "Accuracy outside Indian plates, including neighboring-country scripts, is unproven"
+      ]
+    }
+  ]
+}

@@ -34,6 +34,7 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
         run: |
           uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements.lock
+          uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements-anpr.lock
           uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements-face.lock
 
   macos-opencv:

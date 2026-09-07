@@ -163,12 +163,73 @@ if not re.fullmatch(r"[0-9a-f]{64}", GFPGAN_MODEL_SHA256):
 FACE_ENHANCEMENT_DEVICE = os.getenv("IBVAP_FACE_ENHANCEMENT_DEVICE", "auto").strip().lower()
 if FACE_ENHANCEMENT_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
     raise ValueError("IBVAP_FACE_ENHANCEMENT_DEVICE must be auto, cpu, mps, or cuda")
-# ANPR is opt-in: EasyOCR is heavy and may download separate weights.
+# ANPR is opt-in: it requires separately reviewed Indian plate-detector weights
+# plus EasyOCR and its separately governed recognition weights.
 ENABLE_ANPR = _env_bool("IBVAP_ENABLE_ANPR", False)
-ANPR_INTERVAL_FRAMES = _env_int("IBVAP_ANPR_INTERVAL_FRAMES", 15, minimum=1)
-ANPR_MIN_OCR_CONFIDENCE = _env_float("IBVAP_ANPR_MIN_OCR_CONFIDENCE", 0.35, minimum=0.0)
+ANPR_INTERVAL_FRAMES = _env_int("IBVAP_ANPR_INTERVAL_FRAMES", 10, minimum=1)
+_anpr_model_setting = os.getenv("IBVAP_ANPR_PLATE_MODEL_PATH", "models/indian_plate_yolov8n.pt")
+ANPR_PLATE_MODEL_PATH = _resolve_path(_anpr_model_setting)
+_default_anpr_model_hash = (
+    "897ad71e4c94cb69aabdb6ba8fbd4bbecfad239fde6bc386ae04c650411787b4"
+    if _anpr_model_setting == "models/indian_plate_yolov8n.pt"
+    else ""
+)
+ANPR_PLATE_MODEL_SHA256 = os.getenv(
+    "IBVAP_ANPR_PLATE_MODEL_SHA256", _default_anpr_model_hash
+).lower()
+if ANPR_PLATE_MODEL_SHA256 and not re.fullmatch(r"[0-9a-f]{64}", ANPR_PLATE_MODEL_SHA256):
+    raise ValueError("IBVAP_ANPR_PLATE_MODEL_SHA256 must be a 64-character hexadecimal digest")
+ANPR_PLATE_DETECTION_CONFIDENCE = _env_float(
+    "IBVAP_ANPR_PLATE_DETECTION_CONFIDENCE", 0.25, minimum=0.0
+)
+if ANPR_PLATE_DETECTION_CONFIDENCE > 1.0:
+    raise ValueError("IBVAP_ANPR_PLATE_DETECTION_CONFIDENCE must be <= 1")
+ANPR_PLATE_INPUT_SIZE = _env_int("IBVAP_ANPR_PLATE_INPUT_SIZE", 640, minimum=128)
+if ANPR_PLATE_INPUT_SIZE % 32:
+    raise ValueError("IBVAP_ANPR_PLATE_INPUT_SIZE must be divisible by 32")
+ANPR_MAX_PLATE_CANDIDATES = _env_int("IBVAP_ANPR_MAX_PLATE_CANDIDATES", 3, minimum=1)
+ANPR_MIN_PLATE_WIDTH_PX = _env_int("IBVAP_ANPR_MIN_PLATE_WIDTH_PX", 80, minimum=1)
+ANPR_MIN_PLATE_SHARPNESS = _env_float("IBVAP_ANPR_MIN_PLATE_SHARPNESS", 20.0, minimum=0.0)
+ANPR_OCR_TARGET_HEIGHT_PX = _env_int("IBVAP_ANPR_OCR_TARGET_HEIGHT_PX", 64, minimum=16)
+ANPR_OCR_LANGUAGES = tuple(
+    language.lower() for language in _env_csv("IBVAP_ANPR_OCR_LANGUAGES", "en")
+)
+if not ANPR_OCR_LANGUAGES:
+    raise ValueError("IBVAP_ANPR_OCR_LANGUAGES must contain at least one EasyOCR language code")
+ANPR_REGIONS = tuple(region.upper() for region in _env_csv("IBVAP_ANPR_REGIONS", "IN"))
+_supported_anpr_regions = {
+    "IN",
+    "BD",
+    "NP",
+    "PK",
+    "BT",
+    "LK",
+    "MM",
+    "CN",
+    "AF",
+    "MV",
+    "GENERIC",
+}
+_unknown_anpr_regions = set(ANPR_REGIONS) - _supported_anpr_regions
+if not ANPR_REGIONS or _unknown_anpr_regions:
+    raise ValueError(
+        "IBVAP_ANPR_REGIONS must contain supported values; unknown: "
+        + ", ".join(sorted(_unknown_anpr_regions))
+    )
+ANPR_MIN_OCR_CONFIDENCE = _env_float("IBVAP_ANPR_MIN_OCR_CONFIDENCE", 0.50, minimum=0.0)
 if ANPR_MIN_OCR_CONFIDENCE > 1.0:
     raise ValueError("IBVAP_ANPR_MIN_OCR_CONFIDENCE must be <= 1")
+ANPR_MIN_CONSENSUS_READS = _env_int("IBVAP_ANPR_MIN_CONSENSUS_READS", 3, minimum=1)
+ANPR_CONSENSUS_WINDOW_SECONDS = _env_float("IBVAP_ANPR_CONSENSUS_WINDOW_SECONDS", 3.0, minimum=0.1)
+ANPR_MIN_CONSENSUS_WEIGHT_RATIO = _env_float(
+    "IBVAP_ANPR_MIN_CONSENSUS_WEIGHT_RATIO", 0.60, minimum=0.0
+)
+if ANPR_MIN_CONSENSUS_WEIGHT_RATIO > 1.0:
+    raise ValueError("IBVAP_ANPR_MIN_CONSENSUS_WEIGHT_RATIO must be <= 1")
+ANPR_MAX_OBSERVATIONS_PER_TRACK = _env_int("IBVAP_ANPR_MAX_OBSERVATIONS_PER_TRACK", 12, minimum=1)
+if ANPR_MAX_OBSERVATIONS_PER_TRACK < ANPR_MIN_CONSENSUS_READS:
+    raise ValueError("IBVAP_ANPR_MAX_OBSERVATIONS_PER_TRACK must be >= consensus reads")
+ANPR_STATE_TTL_SECONDS = _env_float("IBVAP_ANPR_STATE_TTL_SECONDS", 5.0, minimum=0.1)
 
 # Alerts and output
 ALERT_COOLDOWN_SECONDS = _env_float("IBVAP_ALERT_COOLDOWN_SECONDS", 1.0, minimum=0.0)

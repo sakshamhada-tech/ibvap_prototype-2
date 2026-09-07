@@ -29,7 +29,7 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 | Annotated MP4 | `mp4v` recording from both `main.py` and `server.py` | Enabled |
 | Face source review | SCRFD detection, original crop, and landmark-aligned source | Optional |
 | GFPGAN preview | Deterministic, quality-gated, low-strength generative preview | Disabled |
-| ANPR | Vehicle crop, Haar plate localization, and EasyOCR | Disabled |
+| Regional ANPR | Tracked vehicle, external YOLO plate detector, EasyOCR, validation, temporal consensus | Disabled |
 | Persistent cross-camera identity | Re-identification/watchlist matching | Not implemented |
 
 ## Capabilities in detail
@@ -99,7 +99,7 @@ The implemented analytics event types are:
 | `VIRTUAL_FENCE_INTRUSION` | Tracked box contacts the fence or centroid motion crosses it |
 | `SUSPICIOUS_LOITERING` | A continuously observed person remains within the movement limit |
 | `NIGHT_MOVEMENT` | A tracked person or vehicle is detected during low-light mode |
-| `ANPR_READ` | Optional ANPR returns a plate string above its confidence threshold |
+| `ANPR_READ` | Optional ANPR obtains a repeated, quality-weighted, region-valid read for one vehicle track |
 
 Alert behavior includes:
 
@@ -220,21 +220,43 @@ and can change eyes, nose, mouth, skin, age, or other identity-relevant details
 even when a face is visible to a person. It cannot recover authentic information
 that was never captured. Never use its output as identity or forensic evidence.
 
-### Optional ANPR
+### Optional regional ANPR
 
-When enabled, ANPR:
+ANPR is disabled by default and has no effect on the other analytics unless it
+is explicitly enabled. The India-first workflow then:
 
-- runs only for detected vehicles and only at a configurable cadence;
-- crops to the vehicle bounds before plate processing;
-- uses OpenCV's bundled `haarcascade_russian_plate_number.xml` to localize a
-  candidate plate;
-- applies EasyOCR in CPU mode to the largest candidate;
-- selects the OCR result with the highest confidence;
-- strips non-alphanumeric characters and converts text to uppercase; and
-- emits `ANPR_READ` only above the configured OCR confidence threshold.
+1. uses existing vehicle track IDs to stagger expensive OCR attempts;
+2. crops each scheduled tracked vehicle;
+3. localizes up to a bounded number of plate candidates with a separately
+   supplied, SHA-256-verified YOLO checkpoint;
+4. rejects plate crops below the configured minimum pixel width;
+5. rejects crops below a variance-of-Laplacian sharpness gate, optionally
+   rectifies a confidently found four-corner contour, pads/upscales the crop,
+   and tries source-color and CLAHE grayscale variants;
+6. orders EasyOCR tokens geometrically and combines token confidence by text
+   length;
+7. normalizes Unicode without deleting Bengali, Devanagari, Burmese, or Chinese
+   letters, and maps Unicode decimal digits to ASCII digits;
+8. rejects results that do not match a configured regional structure/script;
+9. confidence-weights repeated reads within a bounded per-track time window; and
+10. abstains until one exact normalized text has enough reads and vote share.
 
-The bundled plate cascade is not designed specifically for Indian plates. This
-feature is a best-effort demonstration, not production ANPR.
+Only a newly stable result emits `ANPR_READ`; unstable one-frame guesses are not
+shown as accepted plate text or written as ANPR alerts. The stable state is
+short-lived, expires with its vehicle track, and resets on source reconnect,
+loop, seek, or backwards source time. Plate/OCR exceptions are caught and logged
+without stopping person/vehicle analytics, alerts, recording, alarms, or the
+dashboard.
+
+The implemented validator profiles are `IN`, `BD`, `NP`, `PK`, `BT`, `LK`,
+`MM`, `CN`, `AF`, `MV`, and permissive fallback `GENERIC`. These are routing and
+abstention guards—not proof of country, authenticity, or correctness. `IN` is
+the only default profile. Bangladesh requires Bengali OCR; Nepal may require
+Devanagari; Myanmar requires Burmese; China requires Chinese; and Afghanistan
+may require Arabic-script OCR. Configure corresponding
+EasyOCR languages only after testing their compatibility. No single detector or
+OCR checkpoint in this project has proven universal accuracy across those
+countries, scripts, plate layouts, and camera conditions.
 
 ### Source timing and lifecycle
 
@@ -299,7 +321,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | Technology | Use |
 |---|---|
 | Python 3.11 | Reference runtime |
-| OpenCV | Capture, image conversion, drawing, JPEG/MP4 encoding, plate cascade |
+| OpenCV | Capture, preprocessing, drawing, JPEG/MP4 encoding, and video writing |
 | Ultralytics YOLOv8 | Person/vehicle detection and tracker integration |
 | PyTorch | YOLO runtime and optional GFPGAN inference |
 | NumPy | Frame and numerical operations |
@@ -314,7 +336,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | Face source review | SCRFD via InsightFace + ONNX Runtime | Requires separately reviewed model weights |
 | Face alignment | SCRFD five landmarks + OpenCV affine transform | Source pixels, but geometry is transformed |
 | Generative face preview | Vendored minimal GFPGAN clean inference architecture | Experimental; disabled by default |
-| ANPR | OpenCV Haar cascade + EasyOCR | CPU OCR; separate dependency lock |
+| ANPR | External regional YOLO checkpoint + OpenCV preprocessing + EasyOCR + tracked consensus | Disabled by default; separate dependency lock and weights |
 | Audible alerts | Generated WAV + `afplay`/`winsound`/`paplay`/`aplay` | Plays on the server device, not the browser |
 | Acceleration | ONNX Runtime CoreML/CUDA/CPU; PyTorch MPS/CUDA/CPU | Selected from available providers/devices |
 | Container deployment | Docker / Docker Compose | Base image includes core runtime only |
@@ -376,15 +398,38 @@ platform markers and are skipped on macOS and Windows. Use `-r`:
 The repository intentionally contains `yolov8n.pt` for offline startup. Its
 checksum and provenance are recorded in `models/MODEL_MANIFEST.json`.
 
-### Optional ANPR dependencies
+### Optional regional ANPR
+
+Install the isolated OCR dependency set first:
 
 ```bash
 python -m pip install -r requirements-anpr.lock
+```
+
+The application runtime never downloads plate-detector weights. The reviewed Indian
+checkpoint is an unapproved research candidate with unresolved training-data,
+checkpoint-licence, benchmark, and Ultralytics-licensing questions. Inspect
+`models/ANPR_MODEL_SOURCES.json` and `THIRD_PARTY_NOTICES.md`. Running the
+acquisition script without acceptance prints the risk notice and makes no
+network request:
+
+```bash
+python scripts/download_anpr_model.py
+# Only after independent review:
+python scripts/download_anpr_model.py --accept-research-model-risks
+python scripts/doctor.py --anpr
 export IBVAP_ENABLE_ANPR=true
 ```
 
-EasyOCR may acquire its own separately governed weights on first use. Review
-those terms and network-access implications before enabling ANPR.
+The downloader pins the source commit and accepts the file only if both its
+6,230,819-byte size and SHA-256 match. It installs to the ignored path
+`models/indian_plate_yolov8n.pt`; do not commit it. For a separately reviewed
+checkpoint, configure its local path and mandatory expected digest instead.
+
+EasyOCR may acquire separately governed recognition weights on first use. That
+behavior is announced in the server log but is controlled by EasyOCR, not this
+application. Pre-provision and govern its cache when runtime network access is
+not acceptable. OCR runs in CPU mode in this prototype.
 
 ### Optional SCRFD face source review
 
@@ -477,9 +522,24 @@ current working directory.
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `IBVAP_ENABLE_ANPR` | `false` | Enable plate localization and OCR |
-| `IBVAP_ANPR_INTERVAL_FRAMES` | `15` | Per-vehicle OCR cadence |
-| `IBVAP_ANPR_MIN_OCR_CONFIDENCE` | `0.35` | Minimum accepted EasyOCR confidence |
+| `IBVAP_ENABLE_ANPR` | `false` | Enable optional tracked regional ANPR |
+| `IBVAP_ANPR_PLATE_MODEL_PATH` | `models/indian_plate_yolov8n.pt` | External YOLO plate-detector checkpoint |
+| `IBVAP_ANPR_PLATE_MODEL_SHA256` | Reviewed candidate digest | Mandatory expected checkpoint SHA-256; set explicitly for a custom path |
+| `IBVAP_ANPR_PLATE_DETECTION_CONFIDENCE` | `0.25` | Plate-localization confidence, range 0–1 |
+| `IBVAP_ANPR_PLATE_INPUT_SIZE` | `640` | Plate YOLO input side, divisible by 32 |
+| `IBVAP_ANPR_MAX_PLATE_CANDIDATES` | `3` | Maximum plate boxes OCR'd per scheduled vehicle |
+| `IBVAP_ANPR_INTERVAL_FRAMES` | `10` | Track-staggered OCR cadence |
+| `IBVAP_ANPR_MIN_PLATE_WIDTH_PX` | `80` | Reject smaller detected plate crops |
+| `IBVAP_ANPR_MIN_PLATE_SHARPNESS` | `20` | Minimum variance-of-Laplacian crop sharpness |
+| `IBVAP_ANPR_OCR_TARGET_HEIGHT_PX` | `64` | Upscale short plate crops to this height |
+| `IBVAP_ANPR_OCR_LANGUAGES` | `en` | Comma-separated EasyOCR language codes |
+| `IBVAP_ANPR_REGIONS` | `IN` | Ordered profiles: `IN,BD,NP,PK,BT,LK,MM,CN,AF,MV,GENERIC` |
+| `IBVAP_ANPR_MIN_OCR_CONFIDENCE` | `0.50` | Minimum accepted EasyOCR confidence |
+| `IBVAP_ANPR_MIN_CONSENSUS_READS` | `3` | Matching reads required before stability |
+| `IBVAP_ANPR_CONSENSUS_WINDOW_SECONDS` | `3` | Source-time voting window |
+| `IBVAP_ANPR_MIN_CONSENSUS_WEIGHT_RATIO` | `0.60` | Winner's minimum quality-weighted vote share |
+| `IBVAP_ANPR_MAX_OBSERVATIONS_PER_TRACK` | `12` | Per-track memory bound |
+| `IBVAP_ANPR_STATE_TTL_SECONDS` | `5` | Idle ANPR track-state expiry |
 
 ### Alerts, logs, and output
 
@@ -699,8 +759,8 @@ authenticated panel. The application does not write them as individual files.
 Screenshots, browser caches outside application control, and the original video
 must still be governed by an appropriate retention policy.
 
-Generated logs, output video, downloaded face weights, caches, bytecode, and
-local secrets are excluded from Git. The bundled `yolov8n.pt` remains tracked
+Generated logs, output video, downloaded face/ANPR weights, caches, bytecode,
+and local secrets are excluded from Git. The core `yolov8n.pt` remains tracked
 intentionally.
 
 ## Troubleshooting
@@ -780,6 +840,16 @@ other generative restoration tools cannot guarantee identity fidelity. Improve
 camera distance, focus, lighting, exposure, and source resolution instead of
 using a stronger generative blend.
 
+### ANPR does not start or does not emit a plate
+
+Run `python scripts/doctor.py --anpr`. Startup intentionally fails when ANPR is
+enabled but the detector checkpoint is absent, has no configured SHA-256, or
+fails checksum verification. A running system can still abstain when the plate
+is under 80 pixels wide, OCR confidence is low, text fails the configured
+regional profile, or repeated reads do not reach consensus. Inspect the server
+log, test on labelled footage, and tune one threshold at a time; do not bypass
+checksum or consensus safeguards merely to force output.
+
 ## HTTPS deployment
 
 For direct Uvicorn TLS:
@@ -842,17 +912,18 @@ make check
 4. a Bandit static security scan; and
 5. vulnerability audits of runtime, ANPR, face, and development locks.
 
-The current suite contains 74 unit tests covering geometry, fence contact,
-loitering continuity, source-time behavior, alert cooldown/rotation, bounded
-broadcast, authentication, sessions, host/origin controls, rate limits,
-source parsing, server recording failure isolation, audible-alarm patterns and
-fan-out, face quality gates, and source/review API access. The configured 85%
-coverage threshold and reported
-coverage apply to `utils` and `security`; they are not a claim of whole-system
+The current suite contains 122 unit/integration tests covering geometry, fence
+contact, loitering continuity, source-time behavior, alert cooldown/rotation,
+bounded broadcast, authentication, sessions, host/origin controls, rate limits,
+source parsing, server recording failure isolation, audible-alarm patterns,
+face quality gates, regional plate normalization/validation, OCR token ordering,
+weighted track consensus, ANPR pipeline gating/reset, checksum enforcement, and
+licence-gated model acquisition. The configured 85% coverage threshold and
+reported coverage apply to `utils` and `security`; they are not a claim of whole-system
 or ML-model coverage.
 
 CI runs on Python 3.11, repeats formatting/lint/test/security/audit checks,
-dry-resolves core and face locks for Apple Silicon macOS 14, and separately
+dry-resolves core, ANPR, and face locks for Apple Silicon macOS 14, and separately
 installs pinned OpenCV on a macOS 14 runner to verify that `import cv2` works.
 
 Dependency inputs and universal pinned locks are separated:
@@ -883,8 +954,8 @@ Implemented safeguards include:
 - bounded login/connection/queue state;
 - security headers and disabled API docs;
 - rotating alert and audit logs;
-- checksum verification for bundled YOLO and reviewed face model acquisition;
-- explicit model-license acceptance before face model download;
+- checksum verification for bundled YOLO and configured face/ANPR models;
+- explicit risk/licence acknowledgement before reviewed face or ANPR acquisition;
 - ignored generated data and model weights; and
 - a non-root, no-new-privileges default container.
 
@@ -896,8 +967,8 @@ independent penetration test.
 
 ### Accuracy and analytics
 
-- YOLO, ByteTrack, SCRFD, Haar cascades, OCR, and brightness thresholds can all
-  produce false positives and false negatives.
+- YOLO, ByteTrack, SCRFD, OCR, regional validators, consensus thresholds, and
+  brightness thresholds can all produce false positives and false negatives.
 - The bundled YOLO model is a general COCO model, not a border-domain model.
 - Occlusion, crowding, motion blur, compression, low resolution, weather,
   camera angle, glare, and darkness reduce detection and tracking quality.
@@ -925,13 +996,23 @@ independent penetration test.
 
 ### ANPR
 
-- The Russian-plate Haar cascade is not optimized for Indian plate formats,
-  scripts, layouts, fonts, mounting angles, or traffic conditions.
-- EasyOCR is CPU-only in the current integration and may be slow.
-- OCR output is not jurisdictionally validated and can contain plausible but
-  incorrect characters.
-- ANPR requires separate dependencies and potentially separately downloaded
-  OCR weights.
+- The reviewed Indian detector is a research candidate, not a production-
+  approved model; its training-data provenance and held-out accuracy are
+  unresolved.
+- The candidate localizes plates only. EasyOCR performs recognition in CPU mode
+  and may be inaccurate or slow, especially for small, blurred, angled,
+  two-line, stylized, or non-Latin plates.
+- Structural/script profiles reject some implausible strings but do not verify
+  a registration, determine nationality, correct OCR, or guarantee authenticity.
+- Exact-text temporal consensus suppresses unstable guesses but can still settle
+  on the same repeated wrong text. Track-ID switches can split or misassociate
+  votes.
+- Support profiles do not imply validated model support. India plus all
+  neighboring-country scripts require separately benchmarked detector/OCR
+  combinations; none is supplied or claimed here.
+- ANPR requires external detector weights, separate dependencies, and EasyOCR's
+  separately governed recognition weights. Runtime footage and plate strings
+  remain sensitive personal/operational data.
 
 ### Operations and evidence
 
@@ -990,6 +1071,9 @@ Important model considerations:
   weights for other uses.
 - GFPGAN's code/model have their own upstream terms and its output remains
   generative regardless of licensing.
+- The reviewed Indian plate checkpoint remains research/evaluation-only here;
+  its source-repository licence does not resolve checkpoint, training-data, or
+  Ultralytics commercial-use questions.
 - EasyOCR and any downloaded OCR weights retain their own terms.
 
 Do not commit credentials, camera URLs, operational footage, faces, number

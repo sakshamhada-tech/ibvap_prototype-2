@@ -10,6 +10,15 @@ def test_doctor_reports_complete_environment(monkeypatch, capsys):
     assert "[OK] cv2: 1.0" in output
 
 
+def test_doctor_anpr_mode_reports_missing_external_model(monkeypatch, capsys):
+    monkeypatch.setattr(doctor.importlib, "import_module", lambda _name: object())
+    monkeypatch.setattr(doctor, "version", lambda _name: "1.0")
+    assert doctor.main(include_anpr=True) == 1
+    output = capsys.readouterr().out
+    assert "[MISSING] ANPR plate model" in output
+    assert "download_anpr_model.py" in output
+
+
 def test_doctor_reports_missing_module_and_active_interpreter(monkeypatch, capsys):
     def import_module(name):
         if name == "cv2":
