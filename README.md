@@ -895,7 +895,14 @@ Interpret `last_result` as follows:
 | `region_rejected` | Text did not match any configured regional profile |
 | `valid_observation` but zero stable reads | OCR varied and did not reach temporal consensus |
 
-The diagnostic recommends one temporary tuning change for the observed failure.
+If attempts remain zero, isolate plate localization from vehicle tracking with:
+
+```bash
+python scripts/diagnose_anpr.py --source "$PWD/demo1.mp4" --max-frames 300 --full-frame --output output/anpr_full_frame_diagnostic.mp4
+```
+
+`--full-frame` is diagnostic only; normal alerts remain track-gated. The
+diagnostic recommends one temporary tuning change for the observed failure.
 Test on labelled footage and tune one threshold at a time; do not bypass model
 checksum verification, and restore conservative validation/consensus settings
 after debugging.

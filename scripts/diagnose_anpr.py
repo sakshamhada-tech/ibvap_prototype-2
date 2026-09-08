@@ -33,7 +33,7 @@ def diagnostic_advice(metrics: dict) -> list[str]:
     if metrics.get("attempts", 0) == 0:
         return [
             "No tracked vehicle reached ANPR. Ensure a complete car, motorcycle, bus, or truck is visible; "
-            "the workflow intentionally does not OCR untracked/full-frame plates."
+            "then use --full-frame once to test plate localization independently from vehicle tracking."
         ]
     if metrics.get("detector_candidates", 0) == 0:
         return [
@@ -93,6 +93,11 @@ def main() -> int:
         "--max-frames", type=int, default=300, help="bounded frames to inspect (default: 300)"
     )
     parser.add_argument("--output", type=Path, help="optional annotated diagnostic MP4")
+    parser.add_argument(
+        "--full-frame",
+        action="store_true",
+        help="diagnostic-only plate scan that bypasses the tracked-vehicle prerequisite",
+    )
     args = parser.parse_args()
     if args.max_frames < 1:
         parser.error("--max-frames must be positive")
@@ -112,7 +117,7 @@ def main() -> int:
     try:
         import cv2
 
-        from pipeline import VideoPipeline
+        from pipeline import VideoPipeline, draw_plate
     except ImportError as exc:
         print(f"ANPR runtime dependency is missing: {exc}")
         return 2
@@ -131,6 +136,7 @@ def main() -> int:
     writer = None
     frame_number = 0
     anpr_alerts = []
+    diagnostic_stable_reads = 0
     try:
         pipeline = VideoPipeline(
             on_alert=lambda alert: (
@@ -149,10 +155,25 @@ def main() -> int:
             if not ok:
                 break
             frame_number += 1
-            annotated = pipeline.process_frame(
-                frame,
-                source_time=_source_time(capture, cv2, frame_number, fps, source_is_file),
-            )
+            timestamp = _source_time(capture, cv2, frame_number, fps, source_is_file)
+            if args.full_frame:
+                annotated = frame.copy()
+                if frame_number % config.ANPR_INTERVAL_FRAMES == 0:
+                    height, width = frame.shape[:2]
+                    observation = pipeline.detector.detect_plate_observation(
+                        frame, (0, 0, width, height)
+                    )
+                    if observation is not None:
+                        consensus = pipeline.anpr_consensus.add(0, observation, timestamp)
+                        if consensus is not None and consensus.newly_stable:
+                            diagnostic_stable_reads += 1
+                            anpr_alerts.append(
+                                {"alert_type": "ANPR_READ", "details": consensus.text}
+                            )
+                        if args.output is not None:
+                            draw_plate(annotated, observation.bbox, f"OBS {observation.text}")
+            else:
+                annotated = pipeline.process_frame(frame, source_time=timestamp)
             if args.output is not None:
                 if writer is None:
                     destination = args.output.expanduser().resolve()
@@ -173,7 +194,16 @@ def main() -> int:
             writer.release()
         pipeline.close()
 
-    metrics = dict(pipeline.stats.get("anpr", {}))
+    metrics = (
+        {
+            **pipeline.detector.anpr_diagnostics(),
+            "consensus_tracks": pipeline.anpr_consensus.tracked_count,
+            "stable_reads": diagnostic_stable_reads,
+        }
+        if args.full_frame
+        else dict(pipeline.stats.get("anpr", {}))
+    )
+    metrics["mode"] = "full-frame-diagnostic" if args.full_frame else "tracked-vehicle"
     metrics["frames_inspected"] = frame_number
     metrics["anpr_alerts"] = len(anpr_alerts)
     print("\nANPR diagnostics")
