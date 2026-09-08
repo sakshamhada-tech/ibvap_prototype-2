@@ -79,6 +79,14 @@ class FakeDetector:
     def detect_plate(self, _frame, _bbox):
         raise AssertionError("ANPR is disabled")
 
+    def anpr_diagnostics(self):
+        return {
+            "status": "ready" if config.ENABLE_ANPR else "disabled",
+            "attempts": 0,
+            "valid_observations": 0,
+            "last_result": "waiting" if config.ENABLE_ANPR else "disabled",
+        }
+
     def reset_tracking(self):
         self.reset_calls += 1
 
@@ -213,6 +221,7 @@ def test_pipeline_emits_only_stable_tracked_anpr_reads_and_resets_state(monkeypa
     assert len(anpr_alerts) == 1
     assert anpr_alerts[0]["details"] == "KA01AB1234 (IN)"
     assert video_pipeline._stable_plates[5][0] == "KA01AB1234"
+    assert video_pipeline.stats["anpr"]["stable_reads"] == 1
 
     video_pipeline.reset_tracking()
     assert video_pipeline.anpr_consensus.tracked_count == 0
@@ -238,3 +247,32 @@ def test_anpr_model_file_requires_presence_and_matching_sha256(tmp_path):
 
     digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
     ActualDetector._verify_model_file(model_path, digest, "ANPR", required=True)
+
+
+def test_anpr_diagnostics_distinguish_region_confidence_and_empty_ocr(monkeypatch):
+    class Reader:
+        def __init__(self, results):
+            self.results = results
+
+        def readtext(self, _image, **_kwargs):
+            return self.results
+
+    box = [[0, 0], [20, 0], [20, 10], [0, 10]]
+    detector = ActualDetector.__new__(ActualDetector)
+    detector._anpr_metrics = ActualDetector._new_anpr_metrics()
+    monkeypatch.setattr(ActualDetector, "_plate_variants", lambda _self, _crop: (object(),))
+    monkeypatch.setattr(config, "ANPR_REGIONS", ("IN",))
+    monkeypatch.setattr(config, "ANPR_MIN_OCR_CONFIDENCE", 0.5)
+
+    detector.ocr_reader = Reader([])
+    assert detector._read_plate_variants(object()) is None
+    detector.ocr_reader = Reader([(box, "NOT-A-PLATE", 0.9)])
+    assert detector._read_plate_variants(object()) is None
+    detector.ocr_reader = Reader([(box, "KA01AB1234", 0.2)])
+    assert detector._read_plate_variants(object()) is None
+
+    metrics = detector.anpr_diagnostics()
+    assert metrics["ocr_no_text"] == 1
+    assert metrics["region_rejected"] == 1
+    assert metrics["ocr_low_confidence"] == 1
+    assert metrics["last_result"] == "ocr_low_confidence"

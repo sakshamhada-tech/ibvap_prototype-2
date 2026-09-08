@@ -166,6 +166,7 @@ if FACE_ENHANCEMENT_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
 # ANPR is opt-in: it requires separately reviewed Indian plate-detector weights
 # plus EasyOCR and its separately governed recognition weights.
 ENABLE_ANPR = _env_bool("IBVAP_ENABLE_ANPR", False)
+ANPR_DEBUG = _env_bool("IBVAP_ANPR_DEBUG", False)
 ANPR_INTERVAL_FRAMES = _env_int("IBVAP_ANPR_INTERVAL_FRAMES", 10, minimum=1)
 _anpr_model_setting = os.getenv("IBVAP_ANPR_PLATE_MODEL_PATH", "models/indian_plate_yolov8n.pt")
 ANPR_PLATE_MODEL_PATH = _resolve_path(_anpr_model_setting)

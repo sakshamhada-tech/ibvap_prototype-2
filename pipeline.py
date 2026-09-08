@@ -162,6 +162,7 @@ class VideoPipeline:
             max_observations=config.ANPR_MAX_OBSERVATIONS_PER_TRACK,
         )
         self._stable_plates = {}
+        self._anpr_stable_reads = 0
         self.alert_logger = AlertLogger(
             config.ALERT_LOG_CSV,
             on_alert=on_alert,
@@ -188,6 +189,11 @@ class VideoPipeline:
             "fps": 0.0,
             "uptime_seconds": 0.0,
             "source_status": "starting",
+            "anpr": {
+                **self.detector.anpr_diagnostics(),
+                "consensus_tracks": 0,
+                "stable_reads": 0,
+            },
         }
 
     def process_frame(self, frame, *, source_time: float | None = None):
@@ -292,6 +298,8 @@ class VideoPipeline:
                             consensus.text,
                             self._relative_bbox(observation.bbox, detection["bbox"]),
                         )
+                        if consensus.newly_stable:
+                            self._anpr_stable_reads += 1
                         if consensus.newly_stable and self.alert_logger.log(
                             "ANPR_READ",
                             track_id,
@@ -338,6 +346,11 @@ class VideoPipeline:
                 "fps": fps,
                 "uptime_seconds": elapsed,
                 "source_status": "running",
+                "anpr": {
+                    **self.detector.anpr_diagnostics(),
+                    "consensus_tracks": self.anpr_consensus.tracked_count,
+                    "stable_reads": self._anpr_stable_reads,
+                },
             }
         )
         if self.show_overlays:

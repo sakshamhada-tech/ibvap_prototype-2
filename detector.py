@@ -19,7 +19,24 @@ _LATIN_OCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 class Detector:
+    @staticmethod
+    def _new_anpr_metrics() -> dict:
+        return {
+            "status": "enabled" if config.ENABLE_ANPR else "disabled",
+            "attempts": 0,
+            "detector_candidates": 0,
+            "rejected_small": 0,
+            "rejected_blurry": 0,
+            "ocr_no_text": 0,
+            "ocr_low_confidence": 0,
+            "region_rejected": 0,
+            "valid_observations": 0,
+            "inference_errors": 0,
+            "last_result": "waiting" if config.ENABLE_ANPR else "disabled",
+        }
+
     def __init__(self):
+        self._anpr_metrics = self._new_anpr_metrics()
         self._verify_model_file(
             config.YOLO_MODEL_PATH,
             config.YOLO_MODEL_SHA256,
@@ -56,6 +73,7 @@ class Detector:
                 gpu=False,
                 verbose=False,
             )
+            self._anpr_metrics["status"] = "ready"
 
     @staticmethod
     def _verify_model_file(
@@ -132,12 +150,39 @@ class Detector:
             if callable(reset):
                 reset()
 
+    def anpr_diagnostics(self) -> dict:
+        """Return privacy-safe counters explaining ANPR abstention."""
+        metrics = dict(self._anpr_metrics)
+        metrics.update(
+            {
+                "regions": list(config.ANPR_REGIONS),
+                "minimum_plate_width_px": config.ANPR_MIN_PLATE_WIDTH_PX,
+                "minimum_sharpness": config.ANPR_MIN_PLATE_SHARPNESS,
+                "minimum_ocr_confidence": config.ANPR_MIN_OCR_CONFIDENCE,
+                "consensus_reads": config.ANPR_MIN_CONSENSUS_READS,
+            }
+        )
+        return metrics
+
+    def _set_anpr_result(self, result: str) -> None:
+        self._anpr_metrics["last_result"] = result
+        if config.ANPR_DEBUG:
+            LOGGER.info(
+                "ANPR diagnostic: result=%s attempts=%s candidates=%s valid=%s",
+                result,
+                self._anpr_metrics["attempts"],
+                self._anpr_metrics["detector_candidates"],
+                self._anpr_metrics["valid_observations"],
+            )
+
     def detect_plate_observation(self, frame, vehicle_bbox) -> PlateObservation | None:
         """Detect and OCR the strongest valid regional plate in one vehicle crop."""
         if self.plate_model is None or self.ocr_reader is None:
             return None
+        self._anpr_metrics["attempts"] += 1
         vehicle_crop, offset = self._crop(frame, vehicle_bbox)
         if vehicle_crop is None:
+            self._set_anpr_result("invalid_vehicle_crop")
             return None
 
         try:
@@ -149,6 +194,8 @@ class Detector:
             )[0]
             observations = self._plate_observations(vehicle_crop, offset, result)
         except Exception:
+            self._anpr_metrics["inference_errors"] += 1
+            self._set_anpr_result("inference_error")
             if not self._anpr_inference_error_active:
                 LOGGER.exception("regional ANPR inference failed; primary analytics will continue")
                 self._anpr_inference_error_active = True
@@ -157,7 +204,10 @@ class Detector:
         self._anpr_inference_error_active = False
         if not observations:
             return None
-        return max(observations, key=lambda item: item.quality)
+        observation = max(observations, key=lambda item: item.quality)
+        self._anpr_metrics["valid_observations"] += 1
+        self._set_anpr_result("valid_observation")
+        return observation
 
     def detect_plate(self, frame, vehicle_bbox):
         """Backward-compatible ``(text, bbox)`` wrapper around regional ANPR."""
@@ -169,6 +219,7 @@ class Detector:
     def _plate_observations(self, vehicle_crop, offset, result) -> list[PlateObservation]:
         boxes = getattr(result, "boxes", None)
         if boxes is None:
+            self._set_anpr_result("no_plate_candidate")
             return []
         coordinates = boxes.xyxy.cpu().numpy()
         confidences = boxes.conf.cpu().numpy()
@@ -177,6 +228,9 @@ class Detector:
             key=lambda candidate: float(candidate[1]),
             reverse=True,
         )[: config.ANPR_MAX_PLATE_CANDIDATES]
+        self._anpr_metrics["detector_candidates"] += len(candidates)
+        if not candidates:
+            self._set_anpr_result("no_plate_candidate")
 
         observations = []
         crop_height, crop_width = vehicle_crop.shape[:2]
@@ -188,6 +242,8 @@ class Detector:
             x2 = max(0, min(crop_width, int(raw_x2)))
             y2 = max(0, min(crop_height, int(raw_y2)))
             if x2 - x1 < config.ANPR_MIN_PLATE_WIDTH_PX or y2 <= y1:
+                self._anpr_metrics["rejected_small"] += 1
+                self._set_anpr_result("plate_too_small")
                 continue
 
             pad_x = max(2, int((x2 - x1) * 0.04))
@@ -196,11 +252,14 @@ class Detector:
             crop_x2, crop_y2 = min(crop_width, x2 + pad_x), min(crop_height, y2 + pad_y)
             plate_crop = vehicle_crop[crop_y1:crop_y2, crop_x1:crop_x2]
             if plate_crop.size == 0:
+                self._set_anpr_result("empty_plate_crop")
                 continue
 
             gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
             sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
             if sharpness < config.ANPR_MIN_PLATE_SHARPNESS:
+                self._anpr_metrics["rejected_blurry"] += 1
+                self._set_anpr_result("plate_too_blurry")
                 continue
             read = self._read_plate_variants(plate_crop)
             if read is None:
@@ -220,6 +279,8 @@ class Detector:
 
     def _read_plate_variants(self, plate_crop) -> tuple[str, float, str] | None:
         best = None
+        saw_text = False
+        saw_valid_region = False
         allowlist = (
             _LATIN_OCR_ALLOWLIST if set(config.ANPR_REGIONS).issubset(_LATIN_ANPR_REGIONS) else None
         )
@@ -231,13 +292,35 @@ class Detector:
             candidate = combine_ocr_results(results)
             if candidate is None:
                 continue
+            saw_text = True
             text, confidence = candidate
             region = identify_plate_region(text, config.ANPR_REGIONS)
-            if region is None or confidence < config.ANPR_MIN_OCR_CONFIDENCE:
+            if config.ANPR_DEBUG:
+                LOGGER.info(
+                    "ANPR OCR diagnostic: text=%r confidence=%.3f matched_region=%s",
+                    text,
+                    confidence,
+                    region,
+                )
+            if region is None:
+                continue
+            saw_valid_region = True
+            if confidence < config.ANPR_MIN_OCR_CONFIDENCE:
                 continue
             if best is None or confidence > best[1]:
                 best = (text, confidence, region)
-        return best
+
+        if best is not None:
+            return best
+        if not saw_text:
+            reason = "ocr_no_text"
+        elif not saw_valid_region:
+            reason = "region_rejected"
+        else:
+            reason = "ocr_low_confidence"
+        self._anpr_metrics[reason] += 1
+        self._set_anpr_result(reason)
+        return None
 
     @classmethod
     def _plate_variants(cls, plate_crop) -> tuple:

@@ -7,6 +7,7 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     assert config._env_bool("A_VARIABLE_THAT_IS_NOT_SET", False) is False
     assert config.ENABLE_GFPGAN_RESTORATION is False
     assert config.ENABLE_ANPR is False
+    assert config.ANPR_DEBUG is False
     assert len(config.ANPR_PLATE_MODEL_SHA256) == 64
     assert config.ANPR_REGIONS == ("IN",)
     assert config.ENABLE_AUDIBLE_ALARMS is True

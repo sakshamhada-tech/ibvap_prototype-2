@@ -24,6 +24,7 @@ const el = {
   statFps: document.getElementById("stat-fps"),
   statRecording: document.getElementById("stat-recording"),
   statAlarm: document.getElementById("stat-alarm"),
+  statAnpr: document.getElementById("stat-anpr"),
 };
 
 function tickClock() {
@@ -102,6 +103,22 @@ function applyStats(stats) {
   if (stats.fps !== undefined) el.statFps.textContent = Number(stats.fps).toFixed(1);
   if (stats.recording_status) el.statRecording.textContent = stats.recording_status;
   if (stats.alarm_status) el.statAlarm.textContent = stats.alarm_status;
+  if (stats.anpr) {
+    const attempts = Number(stats.anpr.attempts || 0);
+    const valid = Number(stats.anpr.valid_observations || 0);
+    const result = stats.anpr.last_result || stats.anpr.status || "unknown";
+    el.statAnpr.textContent =
+      stats.anpr.status === "disabled" ? "disabled" : `${result} · ${valid}/${attempts}`;
+    el.statAnpr.title = [
+      `candidates=${stats.anpr.detector_candidates || 0}`,
+      `small=${stats.anpr.rejected_small || 0}`,
+      `blurry=${stats.anpr.rejected_blurry || 0}`,
+      `no-text=${stats.anpr.ocr_no_text || 0}`,
+      `low-confidence=${stats.anpr.ocr_low_confidence || 0}`,
+      `region-rejected=${stats.anpr.region_rejected || 0}`,
+      `stable=${stats.anpr.stable_reads || 0}`,
+    ].join(" · ");
+  }
   if (stats.frame_number !== undefined) {
     el.frameCounter.textContent = `frame ${stats.frame_number}`;
   }

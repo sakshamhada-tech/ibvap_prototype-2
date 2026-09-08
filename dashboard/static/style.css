@@ -417,6 +417,7 @@ body {
 
 .stat {
   flex: 1;
+  min-width: 0;
   padding: 12px 16px;
   border-right: 1px solid var(--hairline);
   display: flex;
@@ -430,6 +431,13 @@ body {
 
 .stat__value {
   font-size: 21px;
+}
+
+#stat-anpr {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stat__label {

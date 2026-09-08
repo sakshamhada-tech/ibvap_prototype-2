@@ -352,6 +352,7 @@ is vendored under `third_party/gfpgan_arch/`.
 |---|---|---:|---|---|
 | `python main.py` | Local window or headless batch/camera processing | No | Stops at EOF | Writes when enabled; writer failure stops startup |
 | `python server.py` | Authenticated dashboard and long-running capture | Yes | Loops at EOF | Writes independently of clients; failures are isolated |
+| `python scripts/diagnose_anpr.py` | Explain ANPR acceptance/abstention | No | Stops at frame bound/EOF | Optional explicit diagnostic output |
 
 Do not run `main.py` and `server.py` against the same physical camera at the
 same time. Many camera backends permit only one owner. Audible-alarm playback is
@@ -436,6 +437,26 @@ EasyOCR may acquire separately governed recognition weights on first use. That
 behavior is announced in the server log but is controlled by EasyOCR, not this
 application. Pre-provision and govern its cache when runtime network access is
 not acceptable. OCR runs in CPU mode in this prototype.
+
+For a complete local-file setup, activate the same environment and run all of
+these in one terminal before starting `server.py`:
+
+```bash
+source .venv/bin/activate
+export IBVAP_VIDEO_SOURCE="$PWD/demo1.mp4"
+export IBVAP_ENABLE_ANPR=true
+export IBVAP_ANPR_REGIONS=IN
+export IBVAP_ANPR_OCR_LANGUAGES=en
+python scripts/doctor.py --anpr
+python scripts/diagnose_anpr.py --source "$PWD/demo1.mp4" --max-frames 300 --output output/anpr_diagnostic.mp4
+python server.py
+```
+
+The bounded diagnostic prints privacy-safe counters and a recommended next step.
+The dashboard also shows `last result · valid observations/attempts`; hover it
+for candidate/rejection counters. To inspect normalized OCR text during a
+controlled test, set `IBVAP_ANPR_DEBUG=true` and restart. Debug logs can contain
+number plates, so turn this back off after diagnosis.
 
 ### Optional SCRFD face source review
 
@@ -529,6 +550,7 @@ current working directory.
 | Variable | Default | Meaning |
 |---|---:|---|
 | `IBVAP_ENABLE_ANPR` | `false` | Enable optional tracked regional ANPR |
+| `IBVAP_ANPR_DEBUG` | `false` | Log detailed rejection reasons and OCR text; sensitive, diagnostic use only |
 | `IBVAP_ANPR_PLATE_MODEL_PATH` | `models/indian_plate_yolov8n.pt` | External YOLO plate-detector checkpoint |
 | `IBVAP_ANPR_PLATE_MODEL_SHA256` | Reviewed candidate digest | Mandatory expected checkpoint SHA-256; set explicitly for a custom path |
 | `IBVAP_ANPR_PLATE_DETECTION_CONFIDENCE` | `0.25` | Plate-localization confidence, range 0–1 |
@@ -855,11 +877,28 @@ not add repository scripts or options.
 
 Run `python scripts/doctor.py --anpr`. Startup intentionally fails when ANPR is
 enabled but the detector checkpoint is absent, has no configured SHA-256, or
-fails checksum verification. A running system can still abstain when the plate
-is under 80 pixels wide, OCR confidence is low, text fails the configured
-regional profile, or repeated reads do not reach consensus. Inspect the server
-log, test on labelled footage, and tune one threshold at a time; do not bypass
-checksum or consensus safeguards merely to force output.
+fails checksum verification. Then run the bounded diagnostic against the same
+source:
+
+```bash
+python scripts/diagnose_anpr.py --source "$PWD/demo1.mp4" --max-frames 300 --output output/anpr_diagnostic.mp4
+```
+
+Interpret `last_result` as follows:
+
+| Result | Meaning |
+|---|---|
+| `waiting` with zero attempts | No tracked supported vehicle has reached ANPR yet |
+| `no_plate_candidate` | The optional plate YOLO found no box in scheduled vehicle crops |
+| `plate_too_small` / `plate_too_blurry` | A quality gate rejected the crop |
+| `ocr_no_text` / `ocr_low_confidence` | EasyOCR failed or remained below threshold |
+| `region_rejected` | Text did not match any configured regional profile |
+| `valid_observation` but zero stable reads | OCR varied and did not reach temporal consensus |
+
+The diagnostic recommends one temporary tuning change for the observed failure.
+Test on labelled footage and tune one threshold at a time; do not bypass model
+checksum verification, and restore conservative validation/consensus settings
+after debugging.
 
 ## HTTPS deployment
 
@@ -923,7 +962,7 @@ make check
 4. a Bandit static security scan; and
 5. vulnerability audits of runtime, ANPR, face, and development locks.
 
-The current suite contains 122 unit/integration tests covering geometry, fence
+The current suite contains 126 unit/integration tests covering geometry, fence
 contact, loitering continuity, source-time behavior, alert cooldown/rotation,
 bounded broadcast, authentication, sessions, host/origin controls, rate limits,
 source parsing, server recording failure isolation, audible-alarm patterns,
