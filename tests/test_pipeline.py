@@ -59,8 +59,9 @@ class FakeFaceEnhancementService:
 
 
 class FakeDetector:
-    def __init__(self, **_kwargs):
+    def __init__(self, **kwargs):
         self.reset_calls = 0
+        self.frame_aligned_tiling = kwargs.get("frame_aligned_tiling")
         self.bbox = (0, 0, 20, 20)
 
     def track_frame(self, _frame):
@@ -126,6 +127,11 @@ def configure_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "ENABLE_FACE_ENHANCEMENT", False)
 
 
+def test_live_overlay_hides_supplemental_tile_proposals():
+    assert pipeline.should_draw_detection({"source": "full-frame"}) is True
+    assert pipeline.should_draw_detection({"source": "tile"}) is False
+
+
 def test_pipeline_uses_source_time_and_persists_active_loitering(monkeypatch, tmp_path):
     configure_pipeline(monkeypatch, tmp_path)
     alerts = []
@@ -178,6 +184,7 @@ def test_pipeline_publishes_metadata_only_evaluation_observations(monkeypatch, t
 
     video_pipeline.process_frame(FakeFrame(), source_time=2.5)
 
+    assert video_pipeline.detector.frame_aligned_tiling is True
     assert len(observations) == 1
     observation = observations[0]
     assert observation["frame_number"] == 1

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import queue
 import threading
+import time
 from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
@@ -21,6 +23,160 @@ from utils.anpr import PlateObservation, combine_ocr_results, identify_plate_reg
 LOGGER = logging.getLogger(__name__)
 _LATIN_ANPR_REGIONS = {"IN", "BT", "LK", "MV"}
 _LATIN_OCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+
+class TiledInferenceWorker:
+    """Run supplemental tiled inference outside the live-frame critical path."""
+
+    def __init__(
+        self,
+        process: Callable[[Any, Any], list[dict]],
+        on_result: Callable[[Any, list[dict], int], None],
+    ) -> None:
+        self._process = process
+        self._on_result = on_result
+        self._jobs: queue.Queue[tuple[Any, int, int]] = queue.Queue(maxsize=1)
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._accepting_jobs = False
+        self._generation = 0
+        self._snapshot: dict[str, Any] = {
+            "status": "starting",
+            "mode": "background_drop_on_busy",
+            "device": config.TILED_INFERENCE_DEVICE,
+            "queue_capacity": 1,
+            "submitted": 0,
+            "completed": 0,
+            "dropped_busy": 0,
+            "errors": 0,
+            "last_frame_number": None,
+            "last_proposals": 0,
+            "last_inference_seconds": None,
+            "message": None,
+        }
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name="ibvap-tiled-inference",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(self, frame, frame_number: int) -> bool:
+        if not self._accepting_jobs or self._stop_event.is_set():
+            return False
+        try:
+            frame_copy = frame.copy()
+        except Exception as exc:
+            self._record_error(f"tile frame copy failed: {exc}")
+            return False
+        with self._lock:
+            generation = self._generation
+        try:
+            self._jobs.put_nowait((frame_copy, frame_number, generation))
+        except queue.Full:
+            with self._lock:
+                self._snapshot["dropped_busy"] += 1
+            return False
+        with self._lock:
+            self._snapshot["submitted"] += 1
+        return True
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._snapshot)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._generation += 1
+            self._snapshot.update(
+                {
+                    "last_frame_number": None,
+                    "last_proposals": 0,
+                    "last_inference_seconds": None,
+                    "message": None,
+                }
+            )
+        while True:
+            try:
+                self._jobs.get_nowait()
+            except queue.Empty:
+                break
+
+    def close(self) -> None:
+        self._accepting_jobs = False
+        self._stop_event.set()
+        while True:
+            try:
+                self._jobs.get_nowait()
+            except queue.Empty:
+                break
+        if self._thread is not None:
+            self._thread.join(timeout=config.TILED_INFERENCE_SHUTDOWN_TIMEOUT_SECONDS)
+        if self._thread is not None and self._thread.is_alive():
+            LOGGER.error("tiled inference worker did not stop before the shutdown timeout")
+
+    def _run(self) -> None:
+        try:
+            # Loading inside the worker keeps optional model setup off the capture thread.
+            model = YOLO(config.YOLO_MODEL_PATH)
+        except Exception as exc:
+            LOGGER.exception("tiled detector initialization failed; full-frame tracking continues")
+            self._record_error(f"tiled detector unavailable: {exc}", status="unavailable")
+            return
+        self._accepting_jobs = True
+        with self._lock:
+            self._snapshot["status"] = "ready"
+        LOGGER.info(
+            "tiled inference ready in bounded background mode on device=%s",
+            config.TILED_INFERENCE_DEVICE,
+        )
+        while not self._stop_event.is_set():
+            try:
+                frame, frame_number, generation = self._jobs.get(
+                    timeout=config.TILED_INFERENCE_QUEUE_POLL_SECONDS
+                )
+            except queue.Empty:
+                continue
+            started = time.perf_counter()
+            try:
+                detections = self._process(model, frame)
+            except Exception as exc:
+                LOGGER.exception("tiled inference failed; full-frame tracking continues")
+                self._record_error(f"tiled inference failed: {exc}")
+                continue
+            elapsed = time.perf_counter() - started
+            with self._lock:
+                if generation != self._generation:
+                    continue
+                self._snapshot.update(
+                    {
+                        "status": "ready",
+                        "completed": self._snapshot["completed"] + 1,
+                        "last_frame_number": frame_number,
+                        "last_proposals": len(detections),
+                        "last_inference_seconds": round(elapsed, 4),
+                        "message": None,
+                    }
+                )
+            try:
+                self._on_result(frame, detections, frame_number)
+            except Exception:
+                LOGGER.exception("tiled result callback failed; full-frame tracking continues")
+
+    def _record_error(self, message: str, *, status: str = "error") -> None:
+        with self._lock:
+            self._snapshot.update(
+                {
+                    "status": status,
+                    "errors": self._snapshot["errors"] + 1,
+                    "message": message,
+                }
+            )
 
 
 class Detector:
@@ -40,7 +196,12 @@ class Detector:
             "last_result": "waiting" if config.ENABLE_ANPR else "disabled",
         }
 
-    def __init__(self, on_focus_snapshot: Callable[[dict[str, Any]], None] | None = None):
+    def __init__(
+        self,
+        on_focus_snapshot: Callable[[dict[str, Any]], None] | None = None,
+        *,
+        frame_aligned_tiling: bool = False,
+    ):
         self._anpr_metrics = self._new_anpr_metrics()
         self._on_focus_snapshot = on_focus_snapshot
         self._focus_lock = threading.RLock()
@@ -71,15 +232,37 @@ class Detector:
         )
         self.model = YOLO(config.YOLO_MODEL_PATH)
         self.tile_model = None
-        if config.ENABLE_TILED_INFERENCE:
+        self.tile_worker: TiledInferenceWorker | None = None
+        self._tile_cursor = 0
+        self._frame_aligned_tiling = bool(frame_aligned_tiling)
+        self._tiled_snapshot: dict[str, Any] = {
+            "status": "disabled" if not config.ENABLE_TILED_INFERENCE else "starting",
+            "mode": "frame_aligned" if self._frame_aligned_tiling else "background_drop_on_busy",
+            "device": config.TILED_INFERENCE_DEVICE,
+            "last_frame_number": None,
+            "last_proposals": 0,
+            "message": None,
+        }
+        if config.ENABLE_TILED_INFERENCE and self._frame_aligned_tiling:
             try:
-                # A separate predictor prevents tile predictions from mutating
-                # the callbacks/state owned by the full-frame tracker.
+                # Evaluation requires proposals from the exact source frame. A
+                # separate predictor protects ByteTrack state while preserving parity.
                 self.tile_model = YOLO(config.YOLO_MODEL_PATH)
-            except Exception:
+                self._tiled_snapshot["status"] = "ready"
+                LOGGER.info(
+                    "tiled inference ready in frame-aligned evaluation mode on device=%s",
+                    config.TILED_INFERENCE_DEVICE,
+                )
+            except Exception as exc:
                 LOGGER.exception(
                     "tiled detector initialization failed; full-frame tracking continues"
                 )
+                self._tiled_snapshot.update(status="unavailable", message=str(exc))
+        elif config.ENABLE_TILED_INFERENCE:
+            self.tile_worker = TiledInferenceWorker(
+                self._process_tiled_job,
+                self._handle_tiled_result,
+            )
         self._frame_number = 0
         self._tiled_error_active = False
         self.focus_service = NativeFocusService(on_snapshot=self._handle_focus_snapshot)
@@ -116,6 +299,8 @@ class Detector:
             )
             self._anpr_metrics["status"] = "ready"
         self.focus_service.start()
+        if self.tile_worker is not None:
+            self.tile_worker.start()
 
     @staticmethod
     def _verify_model_file(
@@ -183,19 +368,30 @@ class Detector:
             verbose=False,
         )
         detections = self._result_detections(results[0] if results else None, include_tracks=True)
-        if (
-            self.tile_model is not None
-            and self._frame_number % config.TILED_INFERENCE_INTERVAL_FRAMES == 0
-        ):
+        tile_due = self._frame_number % config.TILED_INFERENCE_INTERVAL_FRAMES == 0
+        if self.tile_model is not None and tile_due:
             try:
                 tiled = self._tiled_detections(frame)
             except Exception:
                 if not self._tiled_error_active:
                     LOGGER.exception("tiled inference failed; full-frame tracking will continue")
                 self._tiled_error_active = True
+                self._update_tiled_snapshot(
+                    status="error",
+                    message="tiled inference failed; full-frame tracking continues",
+                )
             else:
                 self._tiled_error_active = False
+                self._update_tiled_snapshot(
+                    status="ready",
+                    last_frame_number=self._frame_number,
+                    last_proposals=len(tiled),
+                    message=None,
+                )
                 detections = self._merge_supplemental(detections, tiled)
+        elif getattr(self, "tile_worker", None) is not None and tile_due:
+            # The one-slot worker drops instead of stalling the live feed.
+            self.tile_worker.submit(frame, self._frame_number)
 
         self._record_detection_diagnostics(detections, input_size, boost_active)
         self._match_authoritative_acquisition(detections)
@@ -207,6 +403,28 @@ class Detector:
             candidates = [detection for detection in detections if detection["track_id"] is None]
             focus_service.submit(frame, candidates, self._frame_number)
         return detections
+
+    def _update_tiled_snapshot(self, **values: Any) -> None:
+        snapshot = getattr(self, "_tiled_snapshot", None)
+        if snapshot is None:  # Supports lightweight detector test doubles.
+            snapshot = {}
+            self._tiled_snapshot = snapshot
+        snapshot.update(values)
+
+    def _process_tiled_job(self, model, frame) -> list[dict]:
+        return self._tiled_detections(
+            frame,
+            model=model,
+            device=config.TILED_INFERENCE_DEVICE,
+        )
+
+    def _handle_tiled_result(self, frame, detections: list[dict], frame_number: int) -> None:
+        """Route exact-frame tile proposals to focus without overlaying stale boxes."""
+        if not detections:
+            return
+        focus_service = getattr(self, "focus_service", None)
+        if focus_service is not None:
+            focus_service.submit(frame, detections, frame_number)
 
     @staticmethod
     def tile_bounds(
@@ -233,17 +451,30 @@ class Detector:
             for x in starts(frame_width)
         )
 
-    def _tiled_detections(self, frame) -> list[dict]:
+    def _tiled_detections(self, frame, *, model=None, device: str | None = None) -> list[dict]:
         height, width = frame.shape[:2]
+        bounds = self.tile_bounds(width, height, config.TILE_SIZE, config.TILE_OVERLAP)
+        if bounds == ((0, 0, width, height),):
+            # A full-frame "tile" has no magnification benefit and only repeats
+            # the authoritative detector, producing duplicate untracked boxes.
+            return []
+        maximum = config.TILED_INFERENCE_MAX_TILES_PER_CYCLE
+        bound_count = len(bounds)
+        if bound_count > maximum:
+            start = getattr(self, "_tile_cursor", 0) % bound_count
+            bounds = tuple(bounds[(start + offset) % bound_count] for offset in range(maximum))
+            self._tile_cursor = (start + maximum) % bound_count
+        predictor = model if model is not None else self.tile_model
+        if predictor is None:
+            return []
+        selected_device = device or config.TILED_INFERENCE_DEVICE
         detections = []
-        for left, top, right, bottom in self.tile_bounds(
-            width, height, config.TILE_SIZE, config.TILE_OVERLAP
-        ):
+        for left, top, right, bottom in bounds:
             tile = frame[top:bottom, left:right]
-            results = self.tile_model.predict(
+            results = predictor.predict(
                 tile,
-                conf=config.CONFIDENCE_THRESHOLD,
-                device=config.YOLO_DEVICE,
+                conf=config.TILED_INFERENCE_CONFIDENCE_THRESHOLD,
+                device=selected_device,
                 classes=[config.PERSON_CLASS_ID, *config.VEHICLE_CLASS_IDS],
                 verbose=False,
             )
@@ -434,6 +665,22 @@ class Detector:
     def detection_diagnostics(self) -> dict[str, Any]:
         diagnostics = dict(getattr(self, "_detection_diagnostics", {}))
         diagnostics["focus"] = self.focus_snapshot(include_image=False)
+        tile_worker = getattr(self, "tile_worker", None)
+        diagnostics["tiled_inference"] = (
+            tile_worker.snapshot()
+            if tile_worker is not None
+            else dict(
+                getattr(
+                    self,
+                    "_tiled_snapshot",
+                    {
+                        "status": "disabled",
+                        "mode": "disabled",
+                        "last_proposals": 0,
+                    },
+                )
+            )
+        )
         return diagnostics
 
     def focus_snapshot(self, *, include_image: bool = True) -> dict[str, Any]:
@@ -459,8 +706,15 @@ class Detector:
         focus_service = getattr(self, "focus_service", None)
         if focus_service is not None:
             focus_service.reset()
+        tile_worker = getattr(self, "tile_worker", None)
+        if tile_worker is not None:
+            tile_worker.reset()
+        self._tile_cursor = 0
 
     def close(self) -> None:
+        tile_worker = getattr(self, "tile_worker", None)
+        if tile_worker is not None:
+            tile_worker.close()
         focus_service = getattr(self, "focus_service", None)
         if focus_service is not None:
             focus_service.close()

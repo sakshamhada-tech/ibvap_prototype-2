@@ -41,6 +41,11 @@ def frame_brightness(frame) -> float:
     return float(np.mean(gray))
 
 
+def should_draw_detection(detection: dict) -> bool:
+    """Keep supplemental tile proposals out of the authoritative live overlay."""
+    return detection.get("source", "full-frame") != "tile"
+
+
 def draw_detection(frame, detection: dict, is_loitering: bool) -> None:
     x1, y1, x2, y2 = detection["bbox"]
     color = COLOR_PERSON if detection["class_name"] == "person" else COLOR_VEHICLE
@@ -127,7 +132,10 @@ class VideoPipeline:
         on_evaluation_frame=None,
         show_overlays: bool = True,
     ):
-        self.detector = Detector(on_focus_snapshot=on_focus_snapshot)
+        self.detector = Detector(
+            on_focus_snapshot=on_focus_snapshot,
+            frame_aligned_tiling=on_evaluation_frame is not None,
+        )
         self._on_evaluation_frame = on_evaluation_frame
         self.face_enhancer = None
         if config.ENABLE_FACE_ENHANCEMENT and on_face_snapshot is not None:
@@ -509,7 +517,9 @@ class VideoPipeline:
                 plate_text, relative_bbox = self._stable_plates[track_id]
                 plate_bbox = self._project_bbox(relative_bbox, detection["bbox"])
 
-            if self.show_overlays:
+            # Tile detections are supplemental review proposals, not authoritative
+            # tracks. Rendering them as normal green boxes is misleading.
+            if self.show_overlays and should_draw_detection(detection):
                 draw_detection(frame, detection, loitering.active)
                 if plate_bbox is not None:
                     draw_plate(frame, plate_bbox, plate_text)

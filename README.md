@@ -132,8 +132,17 @@ merges duplicates at tile boundaries. Supplemental detections remain untracked
 until normal full-frame tracking acquires them; the implementation does not
 invent persistent IDs from independent tile predictions.
 
-Tiling can improve recall for some small objects but multiplies inference work,
-can add false positives, and has no real-time guarantee. It defaults off.
+In live CLI/dashboard operation, tiling owns a separate CPU-default, one-slot
+background worker and drops scheduled work while busy instead of blocking the
+feed. Each cycle examines a rotating bounded subset of tiles. Raw tile proposals
+feed native-focus review and diagnostics but are not painted as normal green
+tracked-person boxes. A source that fits in one tile is skipped because repeating
+the full-frame detector adds no source-pixel advantage. Controlled evaluation
+keeps frame-aligned tiling so its predictions and measured cost remain attributable
+to the exact labelled frame.
+
+Tiling can improve recall for some small objects but adds compute, can add false
+positives, and has no real-time guarantee. It defaults off.
 
 ### Native source-pixel focus and tracker acquisition
 
@@ -479,7 +488,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | Face alignment | SCRFD five landmarks + OpenCV affine transform | Source pixels, but geometry is transformed |
 | Generative face preview | Vendored minimal GFPGAN clean inference architecture | Experimental; disabled by default |
 | ANPR | External regional YOLO checkpoint + OpenCV preprocessing + EasyOCR + tracked consensus | Disabled by default; separate dependency lock and weights |
-| Tiled detection | Separate Ultralytics predictor over overlapping tiles | Disabled; synchronous and FPS-expensive |
+| Tiled detection | Bounded Ultralytics worker over rotating overlapping tiles | Disabled; drop-on-busy in live mode, frame-aligned in evaluation |
 | Native digital focus | Reviewed object model on source crops in a one-slot worker | Disabled; source evidence only, no synthetic track IDs |
 | Controlled evaluation | JSON annotations/traces plus deterministic Python scoring | No extra model or dependency |
 | Posture review | Operator-supplied Ultralytics pose checkpoint in a bounded worker | Disabled; uses core runtime plus external weights |
@@ -705,8 +714,13 @@ parameters rather than validated universal values.
 | `IBVAP_ENABLE_TILED_INFERENCE` | `false` | Enable cadence-limited supplemental tile inference |
 | `IBVAP_TILE_SIZE` | `640` | Square tile side in source pixels |
 | `IBVAP_TILE_OVERLAP` | `0.20` | Fractional overlap, range 0–0.9 |
-| `IBVAP_TILED_INFERENCE_INTERVAL_FRAMES` | `30` | Expensive tiled-inference cadence |
+| `IBVAP_TILED_INFERENCE_INTERVAL_FRAMES` | `30` | Scheduled tiled-inference cadence |
+| `IBVAP_TILED_INFERENCE_MAX_TILES_PER_CYCLE` | `4` | Rotating per-job tile bound, maximum 64 |
+| `IBVAP_TILED_INFERENCE_CONFIDENCE_THRESHOLD` | `0.50` | Supplemental proposal threshold, range 0–1 |
 | `IBVAP_TILED_INFERENCE_NMS_IOU` | `0.50` | Cross-tile class-aware NMS threshold |
+| `IBVAP_TILED_INFERENCE_DEVICE` | `cpu` | Isolated worker device; MPS is explicit and should not share live primary inference |
+| `IBVAP_TILED_INFERENCE_QUEUE_POLL_SECONDS` | `0.2` | Worker queue poll timeout |
+| `IBVAP_TILED_INFERENCE_SHUTDOWN_TIMEOUT_SECONDS` | `10` | Bounded worker shutdown wait |
 
 ### Native digital focus
 
@@ -879,10 +893,13 @@ export IBVAP_ENABLE_MOTION_SIGNATURE=true
 export IBVAP_ENABLE_CONTEXTUAL_RISK=true
 ```
 
-Tiling is independent and expensive:
+Tiling is independent and expensive, but live operation is bounded and does not
+block the capture loop. Keep its worker on CPU when primary YOLO owns MPS:
 
 ```bash
 export IBVAP_ENABLE_TILED_INFERENCE=true
+export IBVAP_TILED_INFERENCE_DEVICE=cpu
+export IBVAP_TILED_INFERENCE_MAX_TILES_PER_CYCLE=4
 ```
 
 Posture review requires operator-supplied weights and an exact hash; there is
@@ -1088,6 +1105,24 @@ rather than downgrading individual packages.
 - Confirm `IBVAP_VIDEO_SOURCE=0`; try another integer only when the machine has
   multiple capture devices.
 - Do not run `main.py` and `server.py` against the same camera simultaneously.
+
+### Periodic green `untracked` boxes coincide with feed freezes
+
+Those are raw supplemental tile proposals, not additional ByteTrack identities.
+Older builds ran every source tile synchronously at the configured cadence and
+painted the resulting proposals like normal person detections. Current live mode
+runs a CPU-default, one-slot drop-on-busy worker, limits each cycle, skips a tile
+that merely duplicates the full frame, and keeps raw proposals off the operational
+overlay. The diagnostics line reports worker status, proposal count, and dropped
+jobs. For an immediate no-tiling profile, set:
+
+```bash
+IBVAP_ENABLE_TILED_INFERENCE=false
+```
+
+When primary YOLO uses MPS, keep `IBVAP_TILED_INFERENCE_DEVICE=cpu`. Increasing
+`IBVAP_TILED_INFERENCE_INTERVAL_FRAMES` or the confidence threshold and reducing
+`IBVAP_TILED_INFERENCE_MAX_TILES_PER_CYCLE` further reduce background cost.
 
 ### `audit.jsonl` exists but `alerts.csv` does not
 
@@ -1334,9 +1369,9 @@ independent penetration test.
   validated sensor fusion; the implemented score is only a best-effort aid.
 - Group approach is image-plane clustering and heading correlation, not intent
   recognition or proof of coordination.
-- Tiled and native-focus inference may improve small-object recall but can
-  substantially reduce FPS, increase false positives, and have no real-time
-  guarantee on underpowered hardware.
+- Tiled and native-focus inference may improve small-object recall but still add
+  compute, increase false positives, and have no real-time guarantee. Live tiling
+  is bounded/drop-on-busy; controlled evaluation deliberately pays frame-aligned cost.
 - Digital focus cannot recover detail absent from the source sensor. ROI
   inference can preserve source pixels discarded by whole-frame resizing, but
   confirmation is not identity and contextual analytics still require ByteTrack.

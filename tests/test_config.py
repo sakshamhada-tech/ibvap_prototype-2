@@ -21,6 +21,9 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     assert config.YOLO_TRACKER == "bytetrack.yaml"
     assert config.YOLO_DEVICE == "cpu"
     assert config.YOLO_INPUT_SIZE == 640
+    assert config.TILED_INFERENCE_MAX_TILES_PER_CYCLE == 4
+    assert config.TILED_INFERENCE_CONFIDENCE_THRESHOLD == 0.5
+    assert config.TILED_INFERENCE_DEVICE == "cpu"
     assert config.EVALUATION_IOU_THRESHOLD == 0.5
     assert config.EVALUATION_MAX_FRAMES == 10_000
     assert config.EVALUATION_HARDWARE_LABEL == "unrecorded"
@@ -45,6 +48,8 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
         ("IBVAP_YOLO_TRACKER", "botsort.yaml", "supports only bytetrack.yaml"),
         ("IBVAP_YOLO_DEVICE", "metal", "must be cpu, mps, cuda, or cuda:0"),
         ("IBVAP_YOLO_INPUT_SIZE", "641", "must be divisible by 32"),
+        ("IBVAP_TILED_INFERENCE_DEVICE", "metal", "must be cpu, mps, cuda, or cuda:0"),
+        ("IBVAP_TILED_INFERENCE_MAX_TILES_PER_CYCLE", "65", "must be <= 64"),
         ("IBVAP_NATIVE_FOCUS_CONF_THRESHOLD", "1.1", "must be <= 1"),
         ("IBVAP_EVALUATION_LOW_FPS_PERCENTILE", "60", "must be <= 50"),
         ("IBVAP_EVALUATION_BUILD_LABEL", " ", "must contain 1..128"),

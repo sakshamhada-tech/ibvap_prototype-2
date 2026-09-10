@@ -135,9 +135,32 @@ TILE_OVERLAP = _env_float("IBVAP_TILE_OVERLAP", 0.20, minimum=0.0)
 if TILE_OVERLAP >= 0.9:
     raise ValueError("IBVAP_TILE_OVERLAP must be < 0.9")
 TILED_INFERENCE_INTERVAL_FRAMES = _env_int("IBVAP_TILED_INFERENCE_INTERVAL_FRAMES", 30, minimum=1)
+TILED_INFERENCE_MAX_TILES_PER_CYCLE = _env_int(
+    "IBVAP_TILED_INFERENCE_MAX_TILES_PER_CYCLE", 4, minimum=1
+)
+if TILED_INFERENCE_MAX_TILES_PER_CYCLE > 64:
+    raise ValueError("IBVAP_TILED_INFERENCE_MAX_TILES_PER_CYCLE must be <= 64")
+TILED_INFERENCE_CONFIDENCE_THRESHOLD = _env_float(
+    "IBVAP_TILED_INFERENCE_CONFIDENCE_THRESHOLD", 0.5, minimum=0.0
+)
+if TILED_INFERENCE_CONFIDENCE_THRESHOLD > 1.0:
+    raise ValueError("IBVAP_TILED_INFERENCE_CONFIDENCE_THRESHOLD must be <= 1")
 TILED_INFERENCE_NMS_IOU = _env_float("IBVAP_TILED_INFERENCE_NMS_IOU", 0.5, minimum=0.0)
 if TILED_INFERENCE_NMS_IOU > 1.0:
     raise ValueError("IBVAP_TILED_INFERENCE_NMS_IOU must be <= 1")
+TILED_INFERENCE_DEVICE = os.getenv("IBVAP_TILED_INFERENCE_DEVICE", "cpu").strip().lower()
+if TILED_INFERENCE_DEVICE not in {"cpu", "mps", "cuda", "cuda:0"}:
+    raise ValueError("IBVAP_TILED_INFERENCE_DEVICE must be cpu, mps, cuda, or cuda:0")
+TILED_INFERENCE_QUEUE_POLL_SECONDS = _env_float(
+    "IBVAP_TILED_INFERENCE_QUEUE_POLL_SECONDS", 0.2, minimum=0.01
+)
+if TILED_INFERENCE_QUEUE_POLL_SECONDS > 10.0:
+    raise ValueError("IBVAP_TILED_INFERENCE_QUEUE_POLL_SECONDS must be <= 10")
+TILED_INFERENCE_SHUTDOWN_TIMEOUT_SECONDS = _env_float(
+    "IBVAP_TILED_INFERENCE_SHUTDOWN_TIMEOUT_SECONDS", 10.0, minimum=0.1
+)
+if TILED_INFERENCE_SHUTDOWN_TIMEOUT_SECONDS > 120.0:
+    raise ValueError("IBVAP_TILED_INFERENCE_SHUTDOWN_TIMEOUT_SECONDS must be <= 120")
 
 # Native focus reuses the reviewed object model on untouched source-frame crops.
 # It is opt-in because it owns a separate model instance and adds inference cost.

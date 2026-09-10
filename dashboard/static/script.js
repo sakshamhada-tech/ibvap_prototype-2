@@ -114,10 +114,14 @@ function applyStats(stats) {
     const untracked =
       Number(detection.untracked_full_frame || 0) + Number(detection.untracked_tile || 0);
     const boost = detection.tracking_boost_active ? " · acquisition boost" : "";
-    el.trackingDiagnostics.textContent = `${detection.tracker || "ByteTrack"} · input ${detection.active_input_size || "pending"} · tracked ${tracked} · untracked ${untracked}${boost}`;
+    const tiled = detection.tiled_inference || {};
+    const tileStatus = tiled.status && tiled.status !== "disabled"
+      ? ` · tiles ${tiled.status} (${Number(tiled.last_proposals || 0)} proposals, ${Number(tiled.dropped_busy || 0)} dropped)`
+      : "";
+    el.trackingDiagnostics.textContent = `${detection.tracker || "ByteTrack"} · input ${detection.active_input_size || "pending"} · tracked ${tracked} · untracked ${untracked}${boost}${tileStatus}`;
     el.trackingDiagnostics.title = detection.context_blocker
-      ? `Context blocked: ${detection.context_blocker}. Tile/focus observations remain supplemental.`
-      : "Authoritative full-frame tracking is available for contextual analytics.";
+      ? `Context blocked: ${detection.context_blocker}. Tile/focus observations remain supplemental and are not drawn as tracked boxes.`
+      : "Authoritative full-frame tracking is available. Tile proposals remain supplemental and are not drawn as tracked boxes.";
   }
   if (stats.anpr) {
     const attempts = Number(stats.anpr.attempts || 0);
