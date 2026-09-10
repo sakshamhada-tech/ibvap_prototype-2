@@ -123,9 +123,10 @@ class VideoPipeline:
         self,
         on_alert=None,
         on_face_snapshot=None,
+        on_focus_snapshot=None,
         show_overlays: bool = True,
     ):
-        self.detector = Detector()
+        self.detector = Detector(on_focus_snapshot=on_focus_snapshot)
         self.face_enhancer = None
         if config.ENABLE_FACE_ENHANCEMENT and on_face_snapshot is not None:
             self.face_enhancer = FaceEnhancementService(
@@ -271,6 +272,12 @@ class VideoPipeline:
             "fps": 0.0,
             "uptime_seconds": 0.0,
             "source_status": "starting",
+            "detection": self._detector_diagnostics(),
+            "context_readiness": {
+                "status": "blocked",
+                "reason": "no_person_detection",
+                "people": [],
+            },
             "anpr": {
                 **self.detector.anpr_diagnostics(),
                 "consensus_tracks": 0,
@@ -350,11 +357,21 @@ class VideoPipeline:
         ):
             self.face_enhancer.submit(frame, people, self.frame_number)
 
+        context_people = []
         for detection in detections:
             track_id = detection["track_id"]
             class_name = detection["class_name"]
             loitering = LoiteringState(active=False, started=False)
             fence_contact = False
+            if class_name == "person" and track_id is None:
+                context_people.append(
+                    {
+                        "track_id": None,
+                        "status": "blocked",
+                        "reason": "authoritative_tracker_not_acquired",
+                        "source": detection.get("source", "unknown"),
+                    }
+                )
 
             if track_id is not None:
                 fence_contact = self.fence.check_crossing(
@@ -375,11 +392,21 @@ class VideoPipeline:
                         self._remember_alert(f"INTRUSION: {class_name}{night_tag}")
 
                 if class_name == "person":
+                    in_loitering_scope = point_in_polygon(
+                        detection["centroid"], config.LOITERING_ZONE
+                    )
                     loitering = self.loiter_detector.update(
                         track_id,
                         detection["centroid"],
                         timestamp,
-                        in_scope=point_in_polygon(detection["centroid"], config.LOITERING_ZONE),
+                        in_scope=in_loitering_scope,
+                    )
+                    context_people.append(
+                        self.loiter_detector.diagnostics(
+                            track_id,
+                            timestamp,
+                            in_scope=in_loitering_scope,
+                        )
                     )
                     if loitering.started and self.alert_logger.log(
                         "SUSPICIOUS_LOITERING",
@@ -510,6 +537,24 @@ class VideoPipeline:
                 "fps": fps,
                 "uptime_seconds": elapsed,
                 "source_status": "running",
+                "detection": self._detector_diagnostics(),
+                "context_readiness": {
+                    "status": (
+                        "ready"
+                        if any(item["track_id"] is not None for item in context_people)
+                        else "blocked"
+                    ),
+                    "reason": (
+                        None
+                        if any(item["track_id"] is not None for item in context_people)
+                        else (
+                            "authoritative_tracker_not_acquired"
+                            if context_people
+                            else "no_person_detection"
+                        )
+                    ),
+                    "people": context_people,
+                },
                 "anpr": {
                     **self.detector.anpr_diagnostics(),
                     "consensus_tracks": self.anpr_consensus.tracked_count,
@@ -534,6 +579,16 @@ class VideoPipeline:
                 fps,
             )
         return frame
+
+    def _detector_diagnostics(self) -> dict:
+        snapshot = getattr(self.detector, "detection_diagnostics", None)
+        if callable(snapshot):
+            return snapshot()
+        return {
+            "tracker": config.YOLO_TRACKER,
+            "configured_input_size": config.YOLO_INPUT_SIZE,
+            "context_blocker": None,
+        }
 
     def _update_posture_snapshot(self, snapshot: dict) -> None:
         with self._posture_lock:

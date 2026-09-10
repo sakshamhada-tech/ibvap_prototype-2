@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
+from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 from ultralytics import YOLO
 
 import config
+from focus_analysis import NativeFocusService
 from utils.anpr import PlateObservation, combine_ocr_results, identify_plate_region
 
 LOGGER = logging.getLogger(__name__)
@@ -35,8 +40,26 @@ class Detector:
             "last_result": "waiting" if config.ENABLE_ANPR else "disabled",
         }
 
-    def __init__(self):
+    def __init__(self, on_focus_snapshot: Callable[[dict[str, Any]], None] | None = None):
         self._anpr_metrics = self._new_anpr_metrics()
+        self._on_focus_snapshot = on_focus_snapshot
+        self._focus_lock = threading.RLock()
+        self._focus_snapshot: dict[str, Any] = {
+            "status": "disabled" if not config.ENABLE_NATIVE_FOCUS else "starting",
+            "focus": None,
+        }
+        self._focus_boost_remaining = 0
+        self._acquired_focus_episodes: dict[int, int] = {}
+        self._detection_diagnostics: dict[str, Any] = {
+            "tracker": config.YOLO_TRACKER,
+            "configured_input_size": config.YOLO_INPUT_SIZE,
+            "active_input_size": config.YOLO_INPUT_SIZE,
+            "tracking_boost_active": False,
+            "tracked_full_frame": 0,
+            "untracked_full_frame": 0,
+            "untracked_tile": 0,
+            "total": 0,
+        }
         self._verify_model_file(
             config.YOLO_MODEL_PATH,
             config.YOLO_MODEL_SHA256,
@@ -57,6 +80,7 @@ class Detector:
                 )
         self._frame_number = 0
         self._tiled_error_active = False
+        self.focus_service = NativeFocusService(on_snapshot=self._handle_focus_snapshot)
         self.plate_model = None
         self.ocr_reader = None
         self._anpr_inference_error_active = False
@@ -85,6 +109,7 @@ class Detector:
                 verbose=False,
             )
             self._anpr_metrics["status"] = "ready"
+        self.focus_service.start()
 
     @staticmethod
     def _verify_model_file(
@@ -113,17 +138,39 @@ class Detector:
             )
 
     def track_frame(self, frame) -> list[dict]:
-        """Track the full frame and optionally add cadence-limited tiled detections.
+        """Run authoritative ByteTrack, then optional proposal/focus work.
 
-        Full-frame tracking always runs, preserving ByteTrack continuity. Tiled
-        detections are supplemental and remain untracked until the normal
-        detector subsequently acquires them; this limitation is preferable to
-        inventing track identities across independent tile predictions.
+        Only full-frame detections with IDs from the explicitly configured tracker
+        are authoritative. Tile and focus observations retain source coordinates
+        but never receive synthetic persistent IDs.
         """
         self._frame_number += 1
+        focus_lock = getattr(self, "_focus_lock", None)
+        if focus_lock is None:  # Supports lightweight detector test doubles created with __new__.
+            boost_remaining = getattr(self, "_focus_boost_remaining", 0)
+            if boost_remaining > 0:
+                self._focus_boost_remaining = boost_remaining - 1
+        else:
+            with focus_lock:
+                cutoff = self._frame_number - config.NATIVE_FOCUS_MAX_GAP_FRAMES
+                self._acquired_focus_episodes = {
+                    episode_id: acquired_frame
+                    for episode_id, acquired_frame in self._acquired_focus_episodes.items()
+                    if acquired_frame >= cutoff
+                }
+                boost_remaining = self._focus_boost_remaining
+                if boost_remaining > 0:
+                    self._focus_boost_remaining = boost_remaining - 1
+        boost_active = boost_remaining > 0
+        input_size = (
+            config.NATIVE_FOCUS_TRACK_INPUT_SIZE if boost_active else config.YOLO_INPUT_SIZE
+        )
+
         results = self.model.track(
             frame,
             persist=True,
+            tracker=config.YOLO_TRACKER,
+            imgsz=input_size,
             conf=config.CONFIDENCE_THRESHOLD,
             classes=[config.PERSON_CLASS_ID, *config.VEHICLE_CLASS_IDS],
             verbose=False,
@@ -142,6 +189,16 @@ class Detector:
             else:
                 self._tiled_error_active = False
                 detections = self._merge_supplemental(detections, tiled)
+
+        self._record_detection_diagnostics(detections, input_size, boost_active)
+        self._match_authoritative_acquisition(detections)
+        focus_service = getattr(self, "focus_service", None)
+        if (
+            focus_service is not None
+            and self._frame_number % config.NATIVE_FOCUS_INTERVAL_FRAMES == 0
+        ):
+            candidates = [detection for detection in detections if detection["track_id"] is None]
+            focus_service.submit(frame, candidates, self._frame_number)
         return detections
 
     @staticmethod
@@ -264,13 +321,141 @@ class Detector:
         union = first_area + second_area - intersection
         return intersection / union if union else 0.0
 
+    def _record_detection_diagnostics(
+        self, detections: list[dict], input_size: int, boost_active: bool
+    ) -> None:
+        tracked = [item for item in detections if item["track_id"] is not None]
+        untracked_full = [
+            item
+            for item in detections
+            if item["track_id"] is None and item["source"] == "full-frame"
+        ]
+        untracked_tiles = [item for item in detections if item["source"] == "tile"]
+        tracked_people = sum(item["class_id"] == config.PERSON_CLASS_ID for item in tracked)
+        untracked_people = sum(
+            item["class_id"] == config.PERSON_CLASS_ID
+            for item in (*untracked_full, *untracked_tiles)
+        )
+        if tracked_people:
+            context_blocker = None
+        elif untracked_people:
+            context_blocker = "authoritative_tracker_not_acquired"
+        else:
+            context_blocker = "no_person_detection"
+        self._detection_diagnostics = {
+            "tracker": config.YOLO_TRACKER,
+            "configured_input_size": config.YOLO_INPUT_SIZE,
+            "active_input_size": input_size,
+            "tracking_boost_active": boost_active,
+            "tracking_boost_frames_remaining": getattr(self, "_focus_boost_remaining", 0),
+            "tracked_full_frame": len(tracked),
+            "untracked_full_frame": len(untracked_full),
+            "untracked_tile": len(untracked_tiles),
+            "tracked_people": tracked_people,
+            "untracked_people": untracked_people,
+            "total": len(detections),
+            "context_blocker": context_blocker,
+            "provenance": {
+                "authoritative": "full-frame ByteTrack only",
+                "supplemental": "tile/focus candidates have no persistent ID",
+            },
+        }
+
+    def _handle_focus_snapshot(self, snapshot: dict[str, Any]) -> None:
+        focus_lock = getattr(self, "_focus_lock", None)
+        with focus_lock if focus_lock is not None else nullcontext():
+            payload = dict(snapshot)
+            focus = dict(payload["focus"]) if payload.get("focus") else None
+            payload["focus"] = focus
+            if focus:
+                episode_id = focus.get("candidate_episode_id")
+                if episode_id in getattr(self, "_acquired_focus_episodes", {}):
+                    focus["acquisition_state"] = "tracker_acquired"
+                result_age = self._frame_number - int(payload.get("frame_number") or 0)
+                if focus.get("newly_confirmed"):
+                    if result_age <= config.NATIVE_FOCUS_RESULT_MAX_AGE_FRAMES:
+                        self._focus_boost_remaining = max(
+                            getattr(self, "_focus_boost_remaining", 0),
+                            config.NATIVE_FOCUS_TRACK_BOOST_FRAMES,
+                        )
+                    else:
+                        focus["acquisition_state"] = "expired_before_tracker_request"
+            self._focus_snapshot = payload
+            published = self.focus_snapshot()
+        if self._on_focus_snapshot is not None:
+            try:
+                self._on_focus_snapshot(published)
+            except Exception:
+                LOGGER.exception("Focus snapshot callback failed; tracking continues")
+
+    def _match_authoritative_acquisition(self, detections: list[dict]) -> None:
+        focus_lock = getattr(self, "_focus_lock", None)
+        with focus_lock if focus_lock is not None else nullcontext():
+            snapshot = getattr(self, "_focus_snapshot", {})
+            focus = snapshot.get("focus")
+            if not focus or not focus.get("confirmed"):
+                return
+            episode_id = focus.get("candidate_episode_id")
+            if not isinstance(episode_id, int):
+                return
+            if episode_id in getattr(self, "_acquired_focus_episodes", {}):
+                return
+            matches = [
+                detection
+                for detection in detections
+                if detection["track_id"] is not None
+                and detection["source"] == "full-frame"
+                and detection["class_id"] == focus["class_id"]
+                and self._iou(detection["bbox"], focus["bbox"])
+                >= config.NATIVE_FOCUS_ACQUISITION_IOU
+            ]
+            if not matches:
+                return
+            acquired = max(matches, key=lambda item: self._iou(item["bbox"], focus["bbox"]))
+            self._acquired_focus_episodes[episode_id] = self._frame_number
+            focus["acquisition_state"] = "tracker_acquired"
+            focus["authoritative_track_id"] = acquired["track_id"]
+            self._focus_boost_remaining = 0
+            published = self.focus_snapshot()
+        if self._on_focus_snapshot is not None:
+            try:
+                self._on_focus_snapshot(published)
+            except Exception:
+                LOGGER.exception("Focus acquisition callback failed; tracking continues")
+
+    def detection_diagnostics(self) -> dict[str, Any]:
+        diagnostics = dict(getattr(self, "_detection_diagnostics", {}))
+        diagnostics["focus"] = self.focus_snapshot(include_image=False)
+        return diagnostics
+
+    def focus_snapshot(self, *, include_image: bool = True) -> dict[str, Any]:
+        focus_lock = getattr(self, "_focus_lock", None)
+        with focus_lock if focus_lock is not None else nullcontext():
+            payload = dict(getattr(self, "_focus_snapshot", {}))
+            focus = dict(payload["focus"]) if payload.get("focus") else None
+            if focus is not None and not include_image:
+                focus.pop("image_jpeg", None)
+            payload["focus"] = focus
+            return payload
+
     def reset_tracking(self) -> None:
-        """Clear ByteTrack state after a source discontinuity."""
+        """Clear ByteTrack and ephemeral focus state after a source discontinuity."""
         predictor = getattr(self.model, "predictor", None)
         for tracker in getattr(predictor, "trackers", ()) or ():
             reset = getattr(tracker, "reset", None)
             if callable(reset):
                 reset()
+        with self._focus_lock:
+            self._focus_boost_remaining = 0
+            self._acquired_focus_episodes.clear()
+        focus_service = getattr(self, "focus_service", None)
+        if focus_service is not None:
+            focus_service.reset()
+
+    def close(self) -> None:
+        focus_service = getattr(self, "focus_service", None)
+        if focus_service is not None:
+            focus_service.close()
 
     def anpr_diagnostics(self) -> dict:
         """Return privacy-safe counters explaining ANPR abstention."""

@@ -279,6 +279,34 @@ class LoiteringDetector:
         self._last_seen.pop(track_id, None)
         self._active.discard(track_id)
 
+    def diagnostics(self, track_id: int, timestamp: float, *, in_scope: bool = True) -> dict:
+        """Explain whether tracked-person context is ready, accumulating, or blocked."""
+        history = self._history.get(track_id)
+        if not in_scope:
+            return {"track_id": track_id, "status": "blocked", "reason": "outside_loitering_scope"}
+        if not history:
+            return {"track_id": track_id, "status": "blocked", "reason": "no_track_history"}
+        points = [point for _, point in history]
+        width = max(point[0] for point in points) - min(point[0] for point in points)
+        height = max(point[1] for point in points) - min(point[1] for point in points)
+        spread = (width**2 + height**2) ** 0.5
+        duration = max(0.0, timestamp - history[0][0])
+        if track_id in self._active:
+            status, reason = "active", None
+        elif spread >= self.movement_threshold_px:
+            status, reason = "blocked", "movement_exceeds_loitering_threshold"
+        else:
+            status, reason = "accumulating", "minimum_observation_time_not_reached"
+        return {
+            "track_id": track_id,
+            "status": status,
+            "reason": reason,
+            "observed_seconds": round(duration, 3),
+            "required_seconds": self.loitering_seconds,
+            "movement_spread_px": round(spread, 3),
+            "movement_threshold_px": self.movement_threshold_px,
+        }
+
     def history(self, track_id: int) -> tuple[tuple[float, Point], ...]:
         """Expose immutable trajectory samples for cheap derived motion signals."""
         return tuple(self._history.get(track_id, ()))

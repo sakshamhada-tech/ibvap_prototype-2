@@ -59,7 +59,7 @@ class FakeFaceEnhancementService:
 
 
 class FakeDetector:
-    def __init__(self):
+    def __init__(self, **_kwargs):
         self.reset_calls = 0
         self.bbox = (0, 0, 20, 20)
 
@@ -92,8 +92,8 @@ class FakeDetector:
 
 
 class FakeVehicleDetector(FakeDetector):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.observations = []
 
     def track_frame(self, _frame):
@@ -140,6 +140,8 @@ def test_pipeline_uses_source_time_and_persists_active_loitering(monkeypatch, tm
     loitering = [alert for alert in alerts if alert["alert_type"] == "SUSPICIOUS_LOITERING"]
     assert len(loitering) == 1
     assert loitering[0]["source_time_seconds"] == 2.0
+    assert video_pipeline.stats["context_readiness"]["status"] == "ready"
+    assert video_pipeline.stats["context_readiness"]["people"][0]["status"] == "active"
     assert video_pipeline.loiter_detector.update(1, (10, 10), 3.5).active
     video_pipeline.close()
 
@@ -294,8 +296,8 @@ def test_loitering_is_wide_area_and_not_fence_gated(monkeypatch, tmp_path):
 
 
 class FakeGroupDetector(FakeDetector):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.calls = 0
 
     def track_frame(self, _frame):

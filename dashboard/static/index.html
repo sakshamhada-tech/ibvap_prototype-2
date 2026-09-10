@@ -43,6 +43,18 @@
     </section>
 
     <div class="console__rail">
+      <section class="panel panel--focus">
+        <div class="panel__label">
+          <span>Digital focus — source pixels only</span>
+          <span id="focus-status" class="mono muted">checking</span>
+        </div>
+        <p id="tracking-diagnostics" class="tracking-diagnostics mono">ByteTrack · input pending · tracked 0 · untracked 0</p>
+        <div id="focus-evidence" class="focus-evidence" aria-live="polite">
+          <p class="focus-empty">Native focus is disabled by default.</p>
+        </div>
+        <p class="focus-notice">This pane enlarges an untouched source-frame crop for review. It does not create sensor detail. Context starts only after full-frame ByteTrack acquisition.</p>
+      </section>
+
       <section class="panel panel--faces">
         <div class="panel__label">
           <span>Detected face source</span>

@@ -51,6 +51,8 @@ def test_protected_routes_and_security_headers(client):
     assert client.get("/api/stats").status_code == 401
     assert client.get("/api/faces").status_code == 401
     assert client.get("/api/faces/0").status_code == 401
+    assert client.get("/api/focus").status_code == 401
+    assert client.get("/api/focus/image").status_code == 401
     assert client.get("/", headers={"host": "evil.example"}).status_code == 400
 
 
@@ -161,6 +163,54 @@ def test_enhanced_face_panel_api_is_authenticated(client):
     assert client.get("/api/faces/1?variant=review").status_code == 404
     assert client.get("/api/faces/0?variant=invalid").status_code == 404
     assert client.get("/api/faces/99").status_code == 404
+
+
+def test_native_focus_api_is_authenticated_and_preserves_source_provenance(client):
+    sign_in(client)
+    server.capture_service._update_focus_snapshot(
+        {
+            "status": "ready",
+            "frame_number": 42,
+            "updated_monotonic": 1.0,
+            "message": None,
+            "focus": {
+                "candidate_episode_id": 3,
+                "class_id": 0,
+                "class_name": "person",
+                "conf": 0.88,
+                "bbox": (10, 20, 30, 68),
+                "source_candidate": "tile",
+                "confirmation_count": 2,
+                "confirmation_required": 2,
+                "confirmed": True,
+                "source_frame_width": 3840,
+                "source_frame_height": 2160,
+                "source_target_width": 20,
+                "source_target_height": 48,
+                "source_target_height_band": "25-48 px",
+                "source_crop_width": 192,
+                "source_crop_height": 192,
+                "model_input_size": 640,
+                "acquisition_state": "tracker_requested",
+                "authoritative_track_id": None,
+                "image_jpeg": b"untouched-source-crop",
+            },
+        }
+    )
+
+    summary = client.get("/api/focus")
+    assert summary.status_code == 200
+    payload = summary.json()
+    assert payload["focus"]["source_candidate"] == "tile"
+    assert payload["focus"]["source_target_height"] == 48
+    assert payload["focus"]["source_target_height_band"] == "25-48 px"
+    assert payload["focus"]["authoritative_track_id"] is None
+    assert "do not create sensor detail" in payload["disclaimer"]
+    image = client.get(payload["focus"]["image_url"])
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/jpeg"
+    assert image.content == b"untouched-source-crop"
+    assert client.get("/api/focus/image?version=999999").status_code == 404
 
 
 def test_websocket_requires_origin_and_receives_bounded_history(client):

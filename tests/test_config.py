@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 import pytest
 
 import config
@@ -12,6 +16,9 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     assert config.ENABLE_GROUP_APPROACH is False
     assert config.ENABLE_MOTION_SIGNATURE is False
     assert config.ENABLE_TILED_INFERENCE is False
+    assert config.ENABLE_NATIVE_FOCUS is False
+    assert config.YOLO_TRACKER == "bytetrack.yaml"
+    assert config.YOLO_INPUT_SIZE == 640
     assert config.ENABLE_POSTURE_ANALYSIS is False
     assert config.ENABLE_CONTEXTUAL_RISK is False
     assert len(config.ANPR_PLATE_MODEL_SHA256) == 64
@@ -21,6 +28,29 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
         "VIRTUAL_FENCE_INTRUSION",
         "SUSPICIOUS_LOITERING",
     )
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "message"),
+    (
+        ("IBVAP_YOLO_TRACKER", "botsort.yaml", "supports only bytetrack.yaml"),
+        ("IBVAP_YOLO_INPUT_SIZE", "641", "must be divisible by 32"),
+        ("IBVAP_NATIVE_FOCUS_CONF_THRESHOLD", "1.1", "must be <= 1"),
+    ),
+)
+def test_detector_and_focus_configuration_rejects_invalid_values(variable, value, message):
+    environment = os.environ.copy()
+    environment[variable] = value
+    result = subprocess.run(
+        [sys.executable, "-c", "import config"],
+        cwd=config.BASE_DIR,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert message in result.stderr
 
 
 def test_video_source_parser_handles_camera_url_index_and_relative_file():

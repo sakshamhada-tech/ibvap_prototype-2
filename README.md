@@ -24,6 +24,7 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 | Group approach | Proximity clusters plus correlated movement toward one fence segment | Optional, disabled |
 | Motion signature | Heuristic centroid-oscillation score for composite risk only | Experimental, disabled |
 | Tiled small-object inference | Cadence-limited overlapping tiles plus cross-tile NMS | Optional, disabled |
+| Native digital focus | Source-pixel crop confirmation plus bounded tracker-acquisition boost | Experimental, disabled |
 | Low-posture review | Failure-isolated pose worker with size and persistence gates | Experimental, disabled |
 | Firearm review | No detector, alert, dashboard, or alarm path | Not implemented |
 | Contextual risk | Explainable config-weighted per-track signal composition | Experimental, disabled |
@@ -59,7 +60,9 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 
 ### Short-lived object tracking
 
-- Uses the tracker integrated with Ultralytics `model.track(..., persist=True)`.
+- Calls Ultralytics with explicit `tracker="bytetrack.yaml"`, `persist=True`,
+  and a validated configurable detector input size rather than relying on
+  Ultralytics tracker/input defaults.
 - Tracking state is reset after source discontinuities, file loops, camera
   reconnects, and backwards media-time movement.
 - Stale virtual-fence and loitering state expires after a configurable timeout.
@@ -130,6 +133,28 @@ invent persistent IDs from independent tile predictions.
 
 Tiling can improve recall for some small objects but multiplies inference work,
 can add false positives, and has no real-time guarantee. It defaults off.
+
+### Native source-pixel focus and tracker acquisition
+
+The optional native-focus bridge accepts untracked full-frame or tile proposals
+on a configurable cadence. A failure-isolated worker keeps at most one pending
+job, copies the untouched source frame, pads each selected proposal in source
+coordinates, and re-runs the same checksum-verified COCO model on that crop.
+Repeated overlapping observations form a short-lived **candidate episode**, not
+an object identity or persistent track ID.
+
+After temporal confirmation, the worker requests a bounded run of larger-input
+full-frame inference. The normal, explicitly configured ByteTrack instance must
+still acquire the object before fence, loitering, group, posture, ANPR, or risk
+state can use it. The dashboard displays the crop as **DIGITAL FOCUS — SOURCE
+PIXELS ONLY**, including original target dimensions, confidence, confirmation
+progress, provenance, and acquisition state. No super-resolution or generative
+enhancement is used. Browser enlargement does not create sensor detail.
+
+The feature is disabled by default because it owns a second model instance and
+can materially reduce throughput. A one-slot drop-on-busy queue, CPU/MPS/CUDA
+device selection, visible worker status, model checksum verification, and
+exception isolation keep it from blocking or stopping wide tracking.
 
 ### Pose-based low-posture review
 
@@ -428,6 +453,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | Generative face preview | Vendored minimal GFPGAN clean inference architecture | Experimental; disabled by default |
 | ANPR | External regional YOLO checkpoint + OpenCV preprocessing + EasyOCR + tracked consensus | Disabled by default; separate dependency lock and weights |
 | Tiled detection | Separate Ultralytics predictor over overlapping tiles | Disabled; synchronous and FPS-expensive |
+| Native digital focus | Reviewed object model on source crops in a one-slot worker | Disabled; source evidence only, no synthetic track IDs |
 | Posture review | Operator-supplied Ultralytics pose checkpoint in a bounded worker | Disabled; uses core runtime plus external weights |
 | Context signals | Classical centroid geometry plus transparent weighted scoring | Disabled; unvalidated scene heuristics |
 | Audible alerts | Generated WAV + `afplay`/`winsound`/`paplay`/`aplay` | Plays on the server device, not the browser |
@@ -598,6 +624,8 @@ current working directory.
 | `IBVAP_VIDEO_SOURCE` | `0` | Camera index, file path, RTSP(S), or HTTP(S) URL |
 | `IBVAP_YOLO_MODEL` | `yolov8n.pt` | Local model path or Ultralytics model setting |
 | `IBVAP_YOLO_MODEL_SHA256` | Bundled model digest | Expected hash; empty disables verification for a custom model |
+| `IBVAP_YOLO_TRACKER` | `bytetrack.yaml` | Explicit authoritative tracker; only ByteTrack is currently accepted |
+| `IBVAP_YOLO_INPUT_SIZE` | `640` | Full-frame detector side length, divisible by 32, maximum 4096 |
 | `IBVAP_CONFIDENCE_THRESHOLD` | `0.4` | YOLO detection cutoff, range 0–1 |
 | `IBVAP_LOG_LEVEL` | `INFO` | Python log level used by both entry points |
 
@@ -649,6 +677,23 @@ parameters rather than validated universal values.
 | `IBVAP_TILE_OVERLAP` | `0.20` | Fractional overlap, range 0–0.9 |
 | `IBVAP_TILED_INFERENCE_INTERVAL_FRAMES` | `30` | Expensive tiled-inference cadence |
 | `IBVAP_TILED_INFERENCE_NMS_IOU` | `0.50` | Cross-tile class-aware NMS threshold |
+
+### Native digital focus
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `IBVAP_ENABLE_NATIVE_FOCUS` | `false` | Enable the isolated source-crop confirmation bridge |
+| `IBVAP_NATIVE_FOCUS_INTERVAL_FRAMES` | `5` | Candidate submission cadence |
+| `IBVAP_NATIVE_FOCUS_MODEL_INPUT_SIZE` | `640` | ROI model input side, divisible by 32 |
+| `IBVAP_NATIVE_FOCUS_TRACK_INPUT_SIZE` | `1280` | Temporary authoritative full-frame input side |
+| `IBVAP_NATIVE_FOCUS_MAX_REGIONS` | `2` | Maximum highest-confidence proposals per worker job |
+| `IBVAP_NATIVE_FOCUS_PADDING_RATIO` | `0.5` | Context padding around each source candidate |
+| `IBVAP_NATIVE_FOCUS_CONFIRMATION_FRAMES` | `2` | Spatial observations required before tracker request |
+| `IBVAP_NATIVE_FOCUS_TRACK_BOOST_FRAMES` | `30` | Maximum larger-input full-frame tracking frames per request |
+| `IBVAP_NATIVE_FOCUS_DEVICE` | `auto` | `auto`, `cpu`, `mps`, `cuda`, or `cuda:0` |
+
+Confidence, crop-size, IoU, result-age, JPEG, queue-poll, and shutdown controls
+are validated settings listed in `.env.example`.
 
 ### Low-posture review
 
@@ -888,6 +933,8 @@ invalidate every outstanding session.
 | `GET /api/faces/{index}?variant=source` | Required | Original detected camera-pixel crop |
 | `GET /api/faces/{index}?variant=aligned` | Required | Landmark-aligned source crop |
 | `GET /api/faces/{index}?variant=review` | Required | Experimental GFPGAN image, when available |
+| `GET /api/focus` | Required | Native-focus status, source provenance, and acquisition metadata |
+| `GET /api/focus/image` | Required | Versioned untouched source-crop JPEG |
 | `WS /ws` | Required | Per-client live alerts and periodic statistics |
 
 ## Output files and retention
@@ -1221,8 +1268,12 @@ independent penetration test.
   validated sensor fusion; the implemented score is only a best-effort aid.
 - Group approach is image-plane clustering and heading correlation, not intent
   recognition or proof of coordination.
-- Tiled inference may improve small-object recall but can substantially reduce
-  FPS and has no real-time guarantee on underpowered hardware.
+- Tiled and native-focus inference may improve small-object recall but can
+  substantially reduce FPS, increase false positives, and have no real-time
+  guarantee on underpowered hardware.
+- Digital focus cannot recover detail absent from the source sensor. ROI
+  inference can preserve source pixels discarded by whole-frame resizing, but
+  confirmation is not identity and contextual analytics still require ByteTrack.
 - Low-posture geometry is not reliable for tiny, occluded, or distant people and
   cannot distinguish crawling from every fall, bend, or seated posture.
 - Firearm detection, related alerts, dashboard metadata, and alarm playback are

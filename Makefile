@@ -10,7 +10,7 @@ format-check:
 	python -m ruff format --check .
 
 security:
-	python -m bandit -q -r alarms.py config.py detector.py face_enhancement.py main.py pipeline.py posture_analysis.py security.py server.py scripts utils -s B104
+	python -m bandit -q -r alarms.py config.py detector.py face_enhancement.py focus_analysis.py main.py pipeline.py posture_analysis.py security.py server.py scripts utils -s B104
 
 audit:
 	python -m pip_audit -r requirements.lock

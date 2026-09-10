@@ -116,6 +116,12 @@ _default_model_hash = (
 YOLO_MODEL_SHA256 = os.getenv("IBVAP_YOLO_MODEL_SHA256", _default_model_hash).lower()
 if YOLO_MODEL_SHA256 and not re.fullmatch(r"[0-9a-f]{64}", YOLO_MODEL_SHA256):
     raise ValueError("IBVAP_YOLO_MODEL_SHA256 must be a 64-character hexadecimal digest")
+YOLO_TRACKER = os.getenv("IBVAP_YOLO_TRACKER", "bytetrack.yaml").strip()
+if YOLO_TRACKER != "bytetrack.yaml":
+    raise ValueError("IBVAP_YOLO_TRACKER currently supports only bytetrack.yaml")
+YOLO_INPUT_SIZE = _env_int("IBVAP_YOLO_INPUT_SIZE", 640, minimum=32)
+if YOLO_INPUT_SIZE > 4096 or YOLO_INPUT_SIZE % 32:
+    raise ValueError("IBVAP_YOLO_INPUT_SIZE must be divisible by 32 and <= 4096")
 CONFIDENCE_THRESHOLD = _env_float("IBVAP_CONFIDENCE_THRESHOLD", 0.4, minimum=0.0)
 if CONFIDENCE_THRESHOLD > 1.0:
     raise ValueError("IBVAP_CONFIDENCE_THRESHOLD must be <= 1")
@@ -128,6 +134,77 @@ TILED_INFERENCE_INTERVAL_FRAMES = _env_int("IBVAP_TILED_INFERENCE_INTERVAL_FRAME
 TILED_INFERENCE_NMS_IOU = _env_float("IBVAP_TILED_INFERENCE_NMS_IOU", 0.5, minimum=0.0)
 if TILED_INFERENCE_NMS_IOU > 1.0:
     raise ValueError("IBVAP_TILED_INFERENCE_NMS_IOU must be <= 1")
+
+# Native focus reuses the reviewed object model on untouched source-frame crops.
+# It is opt-in because it owns a separate model instance and adds inference cost.
+ENABLE_NATIVE_FOCUS = _env_bool("IBVAP_ENABLE_NATIVE_FOCUS", False)
+NATIVE_FOCUS_INTERVAL_FRAMES = _env_int("IBVAP_NATIVE_FOCUS_INTERVAL_FRAMES", 5, minimum=1)
+if NATIVE_FOCUS_INTERVAL_FRAMES > 10_000:
+    raise ValueError("IBVAP_NATIVE_FOCUS_INTERVAL_FRAMES must be <= 10000")
+NATIVE_FOCUS_MODEL_INPUT_SIZE = _env_int("IBVAP_NATIVE_FOCUS_MODEL_INPUT_SIZE", 640, minimum=32)
+NATIVE_FOCUS_TRACK_INPUT_SIZE = _env_int("IBVAP_NATIVE_FOCUS_TRACK_INPUT_SIZE", 1280, minimum=32)
+for _focus_size_name, _focus_size in (
+    ("IBVAP_NATIVE_FOCUS_MODEL_INPUT_SIZE", NATIVE_FOCUS_MODEL_INPUT_SIZE),
+    ("IBVAP_NATIVE_FOCUS_TRACK_INPUT_SIZE", NATIVE_FOCUS_TRACK_INPUT_SIZE),
+):
+    if _focus_size > 4096 or _focus_size % 32:
+        raise ValueError(f"{_focus_size_name} must be divisible by 32 and <= 4096")
+if ENABLE_NATIVE_FOCUS and NATIVE_FOCUS_TRACK_INPUT_SIZE <= YOLO_INPUT_SIZE:
+    raise ValueError(
+        "IBVAP_NATIVE_FOCUS_TRACK_INPUT_SIZE must exceed IBVAP_YOLO_INPUT_SIZE when enabled"
+    )
+NATIVE_FOCUS_MAX_REGIONS = _env_int("IBVAP_NATIVE_FOCUS_MAX_REGIONS", 2, minimum=1)
+if NATIVE_FOCUS_MAX_REGIONS > 16:
+    raise ValueError("IBVAP_NATIVE_FOCUS_MAX_REGIONS must be <= 16")
+NATIVE_FOCUS_PADDING_RATIO = _env_float("IBVAP_NATIVE_FOCUS_PADDING_RATIO", 0.5, minimum=0.0)
+if NATIVE_FOCUS_PADDING_RATIO > 4.0:
+    raise ValueError("IBVAP_NATIVE_FOCUS_PADDING_RATIO must be <= 4")
+NATIVE_FOCUS_MIN_CROP_SIZE_PX = _env_int("IBVAP_NATIVE_FOCUS_MIN_CROP_SIZE_PX", 192, minimum=32)
+if NATIVE_FOCUS_MIN_CROP_SIZE_PX > 8192:
+    raise ValueError("IBVAP_NATIVE_FOCUS_MIN_CROP_SIZE_PX must be <= 8192")
+NATIVE_FOCUS_CONF_THRESHOLD = _env_float("IBVAP_NATIVE_FOCUS_CONF_THRESHOLD", 0.25, minimum=0.0)
+if NATIVE_FOCUS_CONF_THRESHOLD > 1.0:
+    raise ValueError("IBVAP_NATIVE_FOCUS_CONF_THRESHOLD must be <= 1")
+NATIVE_FOCUS_PROPOSAL_IOU = _env_float("IBVAP_NATIVE_FOCUS_PROPOSAL_IOU", 0.05, minimum=0.0)
+if NATIVE_FOCUS_PROPOSAL_IOU > 1.0:
+    raise ValueError("IBVAP_NATIVE_FOCUS_PROPOSAL_IOU must be <= 1")
+NATIVE_FOCUS_CONFIRMATION_FRAMES = _env_int("IBVAP_NATIVE_FOCUS_CONFIRMATION_FRAMES", 2, minimum=2)
+if NATIVE_FOCUS_CONFIRMATION_FRAMES > 30:
+    raise ValueError("IBVAP_NATIVE_FOCUS_CONFIRMATION_FRAMES must be <= 30")
+NATIVE_FOCUS_CONFIRMATION_IOU = _env_float("IBVAP_NATIVE_FOCUS_CONFIRMATION_IOU", 0.15, minimum=0.0)
+if NATIVE_FOCUS_CONFIRMATION_IOU > 1.0:
+    raise ValueError("IBVAP_NATIVE_FOCUS_CONFIRMATION_IOU must be <= 1")
+NATIVE_FOCUS_MAX_GAP_FRAMES = _env_int("IBVAP_NATIVE_FOCUS_MAX_GAP_FRAMES", 30, minimum=1)
+if NATIVE_FOCUS_MAX_GAP_FRAMES > 10_000:
+    raise ValueError("IBVAP_NATIVE_FOCUS_MAX_GAP_FRAMES must be <= 10000")
+NATIVE_FOCUS_TRACK_BOOST_FRAMES = _env_int("IBVAP_NATIVE_FOCUS_TRACK_BOOST_FRAMES", 30, minimum=1)
+if NATIVE_FOCUS_TRACK_BOOST_FRAMES > 300:
+    raise ValueError("IBVAP_NATIVE_FOCUS_TRACK_BOOST_FRAMES must be <= 300")
+NATIVE_FOCUS_QUEUE_POLL_SECONDS = _env_float(
+    "IBVAP_NATIVE_FOCUS_QUEUE_POLL_SECONDS", 0.2, minimum=0.01
+)
+if NATIVE_FOCUS_QUEUE_POLL_SECONDS > 10.0:
+    raise ValueError("IBVAP_NATIVE_FOCUS_QUEUE_POLL_SECONDS must be <= 10")
+NATIVE_FOCUS_SHUTDOWN_TIMEOUT_SECONDS = _env_float(
+    "IBVAP_NATIVE_FOCUS_SHUTDOWN_TIMEOUT_SECONDS", 10.0, minimum=0.1
+)
+if NATIVE_FOCUS_SHUTDOWN_TIMEOUT_SECONDS > 120.0:
+    raise ValueError("IBVAP_NATIVE_FOCUS_SHUTDOWN_TIMEOUT_SECONDS must be <= 120")
+NATIVE_FOCUS_RESULT_MAX_AGE_FRAMES = _env_int(
+    "IBVAP_NATIVE_FOCUS_RESULT_MAX_AGE_FRAMES", 60, minimum=1
+)
+if NATIVE_FOCUS_RESULT_MAX_AGE_FRAMES > 10_000:
+    raise ValueError("IBVAP_NATIVE_FOCUS_RESULT_MAX_AGE_FRAMES must be <= 10000")
+NATIVE_FOCUS_ACQUISITION_IOU = _env_float("IBVAP_NATIVE_FOCUS_ACQUISITION_IOU", 0.10, minimum=0.0)
+if NATIVE_FOCUS_ACQUISITION_IOU > 1.0:
+    raise ValueError("IBVAP_NATIVE_FOCUS_ACQUISITION_IOU must be <= 1")
+NATIVE_FOCUS_JPEG_QUALITY = _env_int("IBVAP_NATIVE_FOCUS_JPEG_QUALITY", 90, minimum=1)
+if NATIVE_FOCUS_JPEG_QUALITY > 100:
+    raise ValueError("IBVAP_NATIVE_FOCUS_JPEG_QUALITY must be <= 100")
+NATIVE_FOCUS_DEVICE = os.getenv("IBVAP_NATIVE_FOCUS_DEVICE", "auto").strip().lower()
+if NATIVE_FOCUS_DEVICE not in {"auto", "cpu", "mps", "cuda", "cuda:0"}:
+    raise ValueError("IBVAP_NATIVE_FOCUS_DEVICE must be auto, cpu, mps, cuda, or cuda:0")
+
 PERSON_CLASS_ID = 0
 VEHICLE_CLASS_IDS = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 

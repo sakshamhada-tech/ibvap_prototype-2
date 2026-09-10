@@ -17,6 +17,9 @@ const el = {
   frameCounter: document.getElementById("frame-counter"),
   alertLog: document.getElementById("alert-log"),
   alertCount: document.getElementById("alert-count"),
+  focusEvidence: document.getElementById("focus-evidence"),
+  focusStatus: document.getElementById("focus-status"),
+  trackingDiagnostics: document.getElementById("tracking-diagnostics"),
   enhancedFaces: document.getElementById("enhanced-faces"),
   faceStatus: document.getElementById("face-status"),
   statPeople: document.getElementById("stat-people"),
@@ -105,6 +108,17 @@ function applyStats(stats) {
   if (stats.fps !== undefined) el.statFps.textContent = Number(stats.fps).toFixed(1);
   if (stats.recording_status) el.statRecording.textContent = stats.recording_status;
   if (stats.alarm_status) el.statAlarm.textContent = stats.alarm_status;
+  if (stats.detection) {
+    const detection = stats.detection;
+    const tracked = Number(detection.tracked_full_frame || 0);
+    const untracked =
+      Number(detection.untracked_full_frame || 0) + Number(detection.untracked_tile || 0);
+    const boost = detection.tracking_boost_active ? " · acquisition boost" : "";
+    el.trackingDiagnostics.textContent = `${detection.tracker || "ByteTrack"} · input ${detection.active_input_size || "pending"} · tracked ${tracked} · untracked ${untracked}${boost}`;
+    el.trackingDiagnostics.title = detection.context_blocker
+      ? `Context blocked: ${detection.context_blocker}. Tile/focus observations remain supplemental.`
+      : "Authoritative full-frame tracking is available for contextual analytics.";
+  }
   if (stats.anpr) {
     const attempts = Number(stats.anpr.attempts || 0);
     const valid = Number(stats.anpr.valid_observations || 0);
@@ -133,6 +147,83 @@ function applyStats(stats) {
     el.connDot.dataset.state = running ? "live" : "down";
     el.connLabel.textContent = running ? "live" : stats.service_status;
     el.video.parentElement.dataset.state = running ? "live" : "down";
+  }
+}
+
+function renderFocus(snapshot) {
+  el.focusEvidence.replaceChildren();
+  el.focusStatus.textContent = snapshot.status || "unknown";
+  const focus = snapshot.focus;
+  if (!focus) {
+    const empty = document.createElement("p");
+    empty.className = "focus-empty";
+    if (snapshot.status === "disabled") {
+      empty.textContent = "Native focus is disabled by default.";
+    } else if (snapshot.status === "starting") {
+      empty.textContent = "Loading the isolated focus worker…";
+    } else if (snapshot.status === "unavailable" || snapshot.status === "degraded") {
+      empty.textContent = snapshot.message || "Native focus is unavailable; wide tracking continues.";
+    } else {
+      empty.textContent = "Waiting for a small untracked candidate.";
+    }
+    el.focusEvidence.append(empty);
+    return;
+  }
+
+  const card = document.createElement("article");
+  card.className = "focus-card";
+  if (focus.image_url) {
+    const figure = document.createElement("figure");
+    figure.className = "focus-crop";
+    const image = document.createElement("img");
+    image.src = focus.image_url;
+    image.alt = `Untouched source-frame crop containing a ${focus.class_name || "candidate"}`;
+    const caption = document.createElement("figcaption");
+    caption.textContent = "SOURCE CROP · NO GENERATED PIXELS";
+    figure.append(image, caption);
+    card.append(figure);
+  }
+
+  const state = document.createElement("div");
+  state.className = "focus-state";
+  state.dataset.state = focus.acquisition_state || "confirming";
+  const stateLabels = {
+    confirming: "TEMPORAL CONFIRMATION",
+    tracker_requested: "AUTHORITATIVE TRACK REQUESTED",
+    tracker_acquired: "BYTETRACK ACQUIRED",
+    expired_before_tracker_request: "EVIDENCE EXPIRED",
+  };
+  state.textContent = stateLabels[focus.acquisition_state] || focus.acquisition_state || "REVIEW";
+
+  const details = document.createElement("p");
+  details.className = "focus-details mono";
+  const confidence = Number(focus.conf);
+  const confidenceText = Number.isFinite(confidence) ? confidence.toFixed(2) : "n/a";
+  const confirmation = `${focus.confirmation_count || 0}/${focus.confirmation_required || 0}`;
+  const targetSize = `${focus.source_target_width || 0}×${focus.source_target_height || 0}px`;
+  const trackText =
+    focus.authoritative_track_id == null ? "no persistent ID" : `ByteTrack #${focus.authoritative_track_id}`;
+  const heightBand = focus.source_target_height_band || "unbanded";
+  details.textContent = `${String(focus.class_name || "candidate").toUpperCase()} · ${targetSize} source · ${heightBand} band · conf ${confidenceText} · confirm ${confirmation} · ${trackText}`;
+  card.append(state, details);
+  el.focusEvidence.append(card);
+}
+
+let focusPollTimer;
+async function pollFocus() {
+  try {
+    const response = await fetch("/api/focus", { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.assign("/login");
+      return;
+    }
+    if (!response.ok) throw new Error(`focus endpoint returned ${response.status}`);
+    renderFocus(await response.json());
+  } catch (error) {
+    el.focusStatus.textContent = "unavailable";
+    console.error("Could not update digital focus", error);
+  } finally {
+    focusPollTimer = window.setTimeout(pollFocus, 1500);
   }
 }
 
@@ -287,6 +378,7 @@ function connect() {
 window.addEventListener("beforeunload", () => {
   window.clearTimeout(reconnectTimer);
   window.clearTimeout(facePollTimer);
+  window.clearTimeout(focusPollTimer);
 });
 el.video.addEventListener("error", () => {
   el.connDot.dataset.state = "down";
@@ -295,3 +387,4 @@ el.video.addEventListener("error", () => {
 });
 connect();
 pollFaces();
+pollFocus();

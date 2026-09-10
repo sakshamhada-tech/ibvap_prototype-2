@@ -66,6 +66,15 @@ class CaptureService:
         self._face_message: str | None = None
         self._face_frame_number: int | None = None
         self._face_updated_monotonic: float | None = None
+        self._focus_lock = threading.Lock()
+        self._focus_version = 0
+        self._focus_images: dict[int, bytes] = {}
+        self._focus_current_image_version: int | None = None
+        self._focus_status = "starting" if config.ENABLE_NATIVE_FOCUS else "disabled"
+        self._focus_message: str | None = None
+        self._focus_frame_number: int | None = None
+        self._focus_updated_monotonic: float | None = None
+        self._focus_metadata: dict | None = None
         self._status_lock = threading.Lock()
         self._status = "stopped"
         self._last_error: str | None = None
@@ -121,6 +130,7 @@ class CaptureService:
             pipeline = VideoPipeline(
                 on_alert=self._handle_alert,
                 on_face_snapshot=self._update_face_snapshot,
+                on_focus_snapshot=self._update_focus_snapshot,
             )
             while not self._stop_event.is_set():
                 capture = self._open_capture(cv2)
@@ -315,6 +325,11 @@ class CaptureService:
         with self._faces_lock:
             stats["face_enhancement_status"] = self._face_status
             stats["enhanced_face_count"] = len(self._face_images)
+        with self._focus_lock:
+            stats["native_focus_status"] = self._focus_status
+            stats["native_focus_state"] = (
+                self._focus_metadata.get("acquisition_state") if self._focus_metadata else "waiting"
+            )
         if self.alarm_player is not None:
             stats.update(self.alarm_player.snapshot())
         return stats
@@ -431,6 +446,87 @@ class CaptureService:
             ):
                 return None
             return images[index].get(variant)
+
+    def _update_focus_snapshot(self, snapshot: dict) -> None:
+        focus = snapshot.get("focus")
+        image = focus.get("image_jpeg") if isinstance(focus, dict) else None
+        metadata = None
+        if isinstance(focus, dict):
+            metadata = {
+                key: focus.get(key)
+                for key in (
+                    "candidate_episode_id",
+                    "class_id",
+                    "class_name",
+                    "conf",
+                    "proposal_iou",
+                    "bbox",
+                    "source_candidate",
+                    "confirmation_count",
+                    "confirmation_required",
+                    "confirmed",
+                    "source_frame_width",
+                    "source_frame_height",
+                    "source_target_width",
+                    "source_target_height",
+                    "source_target_height_band",
+                    "source_crop_width",
+                    "source_crop_height",
+                    "model_input_size",
+                    "acquisition_state",
+                    "authoritative_track_id",
+                )
+            }
+        with self._focus_lock:
+            if isinstance(image, bytes):
+                self._focus_version += 1
+                self._focus_images[self._focus_version] = image
+                self._focus_current_image_version = self._focus_version
+                while len(self._focus_images) > 3:
+                    del self._focus_images[min(self._focus_images)]
+            else:
+                self._focus_current_image_version = None
+                self._focus_images.clear()
+            self._focus_metadata = metadata
+            self._focus_status = str(snapshot.get("status", "error"))
+            self._focus_message = snapshot.get("message")
+            self._focus_frame_number = snapshot.get("frame_number")
+            self._focus_updated_monotonic = snapshot.get("updated_monotonic")
+
+    def focus_summary(self) -> dict:
+        with self._focus_lock:
+            age = (
+                None
+                if self._focus_updated_monotonic is None
+                else max(0.0, time.monotonic() - self._focus_updated_monotonic)
+            )
+            metadata = dict(self._focus_metadata) if self._focus_metadata else None
+            version = self._focus_version
+            if metadata is not None:
+                image_version = self._focus_current_image_version
+                metadata["image_url"] = (
+                    f"/api/focus/image?version={image_version}"
+                    if image_version in self._focus_images
+                    else None
+                )
+            return {
+                "status": self._focus_status,
+                "message": self._focus_message,
+                "frame_number": self._focus_frame_number,
+                "age_seconds": None if age is None else round(age, 2),
+                "version": version,
+                "focus": metadata,
+                "disclaimer": (
+                    "Digital focus displays untouched source pixels only. Browser enlargement "
+                    "and ROI inference do not create sensor detail. Only authoritative "
+                    "full-frame ByteTrack IDs feed contextual analytics."
+                ),
+            }
+
+    def focus_image(self, version: int | None = None) -> bytes | None:
+        with self._focus_lock:
+            selected = self._focus_current_image_version if version is None else version
+            return self._focus_images.get(selected) if selected is not None else None
 
     def health(self) -> dict:
         now = time.monotonic()
@@ -717,6 +813,23 @@ def api_face_image(
     image = capture_service.face_image(index, version, variant)
     if image is None:
         return JSONResponse({"detail": "enhanced face not found"}, status_code=404)
+    return Response(content=image, media_type="image/jpeg")
+
+
+@app.get("/api/focus")
+def api_focus(request: Request):
+    if not _operator(request):
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+    return capture_service.focus_summary()
+
+
+@app.get("/api/focus/image")
+def api_focus_image(request: Request, version: int | None = None):
+    if not _operator(request):
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+    image = capture_service.focus_image(version)
+    if image is None:
+        return JSONResponse({"detail": "focus image not found"}, status_code=404)
     return Response(content=image, media_type="image/jpeg")
 
 
