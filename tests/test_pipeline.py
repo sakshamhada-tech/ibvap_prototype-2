@@ -160,6 +160,7 @@ def test_pipeline_submits_raw_people_to_optional_face_worker(monkeypatch, tmp_pa
 
     video_pipeline.process_frame(frame, source_time=0)
     assert video_pipeline.face_enhancer.started
+    assert video_pipeline.face_enhancer.kwargs["execution_provider"] == "cpu"
     assert video_pipeline.face_enhancer.submissions == [(frame, [(1, (0, 0, 20, 20))], 1)]
     video_pipeline.reset_tracking()
     assert video_pipeline.face_enhancer.reset_calls == 1

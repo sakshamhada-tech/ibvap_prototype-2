@@ -138,6 +138,7 @@ class VideoPipeline:
                 enable_restoration=config.ENABLE_GFPGAN_RESTORATION,
                 confidence_threshold=config.SCRFD_CONFIDENCE_THRESHOLD,
                 input_size=config.SCRFD_INPUT_SIZE,
+                execution_provider=config.SCRFD_EXECUTION_PROVIDER,
                 min_face_size_px=config.SCRFD_MIN_FACE_SIZE_PX,
                 restoration_min_face_size_px=config.GFPGAN_MIN_SOURCE_FACE_SIZE_PX,
                 restoration_min_sharpness=config.GFPGAN_MIN_SOURCE_SHARPNESS,

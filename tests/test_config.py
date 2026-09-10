@@ -23,6 +23,7 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     assert config.EVALUATION_MAX_FRAMES == 10_000
     assert config.EVALUATION_HARDWARE_LABEL == "unrecorded"
     assert config.EVALUATION_BUILD_LABEL == "unrecorded"
+    assert config.SCRFD_EXECUTION_PROVIDER == "cpu"
     assert config.ENABLE_POSTURE_ANALYSIS is False
     assert config.ENABLE_CONTEXTUAL_RISK is False
     assert len(config.ANPR_PLATE_MODEL_SHA256) == 64
@@ -42,6 +43,7 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
         ("IBVAP_NATIVE_FOCUS_CONF_THRESHOLD", "1.1", "must be <= 1"),
         ("IBVAP_EVALUATION_LOW_FPS_PERCENTILE", "60", "must be <= 50"),
         ("IBVAP_EVALUATION_BUILD_LABEL", " ", "must contain 1..128"),
+        ("IBVAP_SCRFD_EXECUTION_PROVIDER", "metal", "must be auto, cpu, cuda, or coreml"),
     ),
 )
 def test_detector_and_focus_configuration_rejects_invalid_values(variable, value, message):

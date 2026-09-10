@@ -20,6 +20,7 @@ def make_service(tmp_path, callback):
         enable_restoration=False,
         confidence_threshold=0.6,
         input_size=640,
+        execution_provider="cpu",
         min_face_size_px=32,
         restoration_min_face_size_px=80,
         restoration_min_sharpness=30,
@@ -81,6 +82,28 @@ def test_face_to_person_assignment_prefers_smallest_containing_box():
     people = [(1, (0, 0, 100, 100)), (2, (20, 20, 60, 60)), (3, (200, 200, 300, 300))]
     assert face_enhancement._containing_track((30, 30, 50, 50), people) == 2
     assert face_enhancement._containing_track((120, 120, 140, 140), people) is None
+
+
+def test_scrfd_provider_selection_keeps_coreml_explicit():
+    mac_providers = {"CoreMLExecutionProvider", "CPUExecutionProvider"}
+    assert face_enhancement._select_scrfd_providers(mac_providers, "auto") == [
+        "CPUExecutionProvider"
+    ]
+    assert face_enhancement._select_scrfd_providers(mac_providers, "coreml") == [
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    cuda_providers = {"CUDAExecutionProvider", "CPUExecutionProvider"}
+    assert face_enhancement._select_scrfd_providers(cuda_providers, "auto") == [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    try:
+        face_enhancement._select_scrfd_providers(mac_providers, "cuda")
+    except face_enhancement.FaceModelsUnavailable as exc:
+        assert "unavailable" in str(exc)
+    else:
+        raise AssertionError("unavailable SCRFD provider was accepted")
 
 
 def test_model_checksum_sidecar_is_enforced(tmp_path):

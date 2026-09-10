@@ -326,6 +326,9 @@ Face review is optional and isolated from the primary capture/analytics path:
 - The source crop is the default face API image and is never replaced by a
   generated portrait.
 - Face work is submitted only on a configurable frame cadence.
+- SCRFD uses ONNX Runtime CPU by default on every platform. CUDA can be selected
+  explicitly or through `auto`; CoreML is opt-in because native Metal assertions
+  cannot be recovered by Python's worker exception boundary.
 - A one-job queue drops work rather than blocking capture when face processing
   falls behind.
 - Results are capped, cached per short-lived track, expired, and held only in
@@ -482,7 +485,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | Posture review | Operator-supplied Ultralytics pose checkpoint in a bounded worker | Disabled; uses core runtime plus external weights |
 | Context signals | Classical centroid geometry plus transparent weighted scoring | Disabled; unvalidated scene heuristics |
 | Audible alerts | Generated WAV + `afplay`/`winsound`/`paplay`/`aplay` | Plays on the server device, not the browser |
-| Acceleration | ONNX Runtime CoreML/CUDA/CPU; PyTorch MPS/CUDA/CPU | Selected from available providers/devices |
+| Acceleration | ONNX Runtime CPU/CUDA with opt-in CoreML; PyTorch MPS/CUDA/CPU | SCRFD defaults to stable CPU; devices remain configurable |
 | Container deployment | Docker / Docker Compose | Base image includes core runtime only |
 | HTTPS | Uvicorn certificate/key or trusted reverse proxy | Required outside loopback development |
 
@@ -767,6 +770,7 @@ than failing the primary pipeline.
 | `IBVAP_FACE_ENHANCEMENT_REFRESH_SECONDS` | `2` | Minimum cache refresh period per track |
 | `IBVAP_FACE_ENHANCEMENT_CACHE_TTL_SECONDS` | `10` | Face-cache retention period |
 | `IBVAP_FACE_ENHANCEMENT_JPEG_QUALITY` | `90` | Dashboard face JPEG quality, range 1–100 |
+| `IBVAP_SCRFD_EXECUTION_PROVIDER` | `cpu` | SCRFD provider: stable `cpu`, CUDA-or-CPU `auto`, `cuda`, or opt-in `coreml` |
 | `IBVAP_FACE_ENHANCEMENT_DEVICE` | `auto` | GFPGAN device: `auto`, `cpu`, `mps`, or `cuda` |
 | `IBVAP_SCRFD_CONFIDENCE_THRESHOLD` | `0.6` | SCRFD confidence cutoff |
 | `IBVAP_SCRFD_INPUT_SIZE` | `640` | SCRFD input side; must be divisible by 32 |
@@ -1133,6 +1137,14 @@ landmarks are weak. Keep `IBVAP_ENABLE_GFPGAN_RESTORATION=false`; GFPGAN and
 other generative restoration tools cannot guarantee identity fidelity. Improve
 camera distance, focus, lighting, exposure, and source resolution instead of
 using a stronger generative blend.
+
+### macOS reports a Metal/CoreML command-buffer assertion during face extraction
+
+Set `IBVAP_SCRFD_EXECUTION_PROVIDER=cpu` and restart. CPU is now the default because
+an ONNX Runtime CoreML failure can abort inside native Metal code before the isolated
+Python worker can catch it. `auto` selects CUDA when available and otherwise CPU;
+`coreml` must be requested explicitly. `IBVAP_FACE_ENHANCEMENT_DEVICE` separately
+controls the optional GFPGAN PyTorch device.
 
 ### ANPR does not start or does not emit a plate
 

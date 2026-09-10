@@ -379,6 +379,11 @@ if SCRFD_CONFIDENCE_THRESHOLD > 1.0:
 SCRFD_INPUT_SIZE = _env_int("IBVAP_SCRFD_INPUT_SIZE", 640, minimum=128)
 if SCRFD_INPUT_SIZE % 32:
     raise ValueError("IBVAP_SCRFD_INPUT_SIZE must be divisible by 32")
+# CPU is the safe default: ONNX Runtime's CoreML provider can terminate a macOS
+# process inside Metal, which Python exception isolation cannot recover from.
+SCRFD_EXECUTION_PROVIDER = os.getenv("IBVAP_SCRFD_EXECUTION_PROVIDER", "cpu").strip().lower()
+if SCRFD_EXECUTION_PROVIDER not in {"auto", "cpu", "cuda", "coreml"}:
+    raise ValueError("IBVAP_SCRFD_EXECUTION_PROVIDER must be auto, cpu, cuda, or coreml")
 SCRFD_MIN_FACE_SIZE_PX = _env_int("IBVAP_SCRFD_MIN_FACE_SIZE_PX", 32, minimum=1)
 GFPGAN_MIN_SOURCE_FACE_SIZE_PX = _env_int("IBVAP_GFPGAN_MIN_SOURCE_FACE_SIZE_PX", 96, minimum=32)
 if GFPGAN_MIN_SOURCE_FACE_SIZE_PX < SCRFD_MIN_FACE_SIZE_PX:

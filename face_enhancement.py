@@ -52,6 +52,7 @@ class FaceEnhancementService:
         enable_restoration: bool,
         confidence_threshold: float,
         input_size: int,
+        execution_provider: str,
         min_face_size_px: int,
         restoration_min_face_size_px: int,
         restoration_min_sharpness: float,
@@ -69,6 +70,7 @@ class FaceEnhancementService:
         self.enable_restoration = enable_restoration
         self.confidence_threshold = confidence_threshold
         self.input_size = input_size
+        self.execution_provider = execution_provider
         self.min_face_size_px = min_face_size_px
         self.restoration_min_face_size_px = restoration_min_face_size_px
         self.restoration_min_sharpness = restoration_min_sharpness
@@ -217,17 +219,7 @@ class FaceEnhancementService:
             ) from exc
 
         available_providers = set(onnxruntime.get_available_providers())
-        providers = [
-            provider
-            for provider in (
-                "CoreMLExecutionProvider",
-                "CUDAExecutionProvider",
-                "CPUExecutionProvider",
-            )
-            if provider in available_providers
-        ]
-        if self.device_setting == "cpu":
-            providers = ["CPUExecutionProvider"]
+        providers = _select_scrfd_providers(available_providers, self.execution_provider)
         self._scrfd = get_model(str(scrfd_path), providers=providers)
         if self._scrfd is None or not getattr(self._scrfd, "use_kps", False):
             raise FaceModelsUnavailable("the configured SCRFD model must provide five landmarks")
@@ -447,6 +439,40 @@ class FaceEnhancementService:
             self.on_snapshot(snapshot)
         except Exception:
             LOGGER.exception("face snapshot callback failed")
+
+
+def _select_scrfd_providers(available_providers: set[str], setting: str) -> list[str]:
+    """Choose SCRFD providers without selecting CoreML implicitly.
+
+    CoreML is opt-in because native Metal assertion failures can terminate the
+    process before Python's worker exception boundary can recover. ``auto`` uses
+    CUDA when available and otherwise the stable CPU provider.
+    """
+    cpu = "CPUExecutionProvider"
+    if cpu not in available_providers:
+        raise FaceModelsUnavailable("ONNX Runtime CPUExecutionProvider is unavailable")
+    if setting == "auto":
+        return (
+            ["CUDAExecutionProvider", cpu]
+            if "CUDAExecutionProvider" in available_providers
+            else [cpu]
+        )
+    requested = {
+        "cpu": cpu,
+        "cuda": "CUDAExecutionProvider",
+        "coreml": "CoreMLExecutionProvider",
+    }[setting]
+    if requested not in available_providers:
+        available = ", ".join(sorted(available_providers)) or "none"
+        raise FaceModelsUnavailable(
+            f"requested SCRFD provider {requested} is unavailable; available: {available}"
+        )
+    if requested == "CoreMLExecutionProvider":
+        LOGGER.warning(
+            "SCRFD CoreML provider explicitly enabled; use "
+            "IBVAP_SCRFD_EXECUTION_PROVIDER=cpu if Metal assertions occur"
+        )
+    return [requested] if requested == cpu else [requested, cpu]
 
 
 def _select_torch_device(torch, setting: str):
