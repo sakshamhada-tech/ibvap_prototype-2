@@ -1,5 +1,7 @@
 import threading
+from types import SimpleNamespace
 
+import posture_analysis
 from posture_analysis import PostureAnalysisService, classify_low_posture
 
 
@@ -47,6 +49,16 @@ def test_standing_and_prone_geometry_are_distinguished():
     )
     assert not standing and standing_score == 0
     assert prone and prone_score > 0
+
+
+def test_posture_auto_device_does_not_implicitly_use_mps():
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+    )
+
+    assert posture_analysis._select_device(fake_torch, "auto") == "cpu"
+    assert posture_analysis._select_device(fake_torch, "mps") == "mps"
 
 
 def test_missing_pose_model_is_failure_isolated(tmp_path):

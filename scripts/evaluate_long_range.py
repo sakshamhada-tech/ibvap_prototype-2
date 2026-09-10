@@ -113,6 +113,7 @@ def _trace_settings() -> dict:
             "model_sha256": config.YOLO_MODEL_SHA256,
             "tracker": config.YOLO_TRACKER,
             "wide_input_size": config.YOLO_INPUT_SIZE,
+            "yolo_device": config.YOLO_DEVICE,
             "confidence_threshold": config.CONFIDENCE_THRESHOLD,
             "virtual_fence": config.VIRTUAL_FENCE_LINE,
             "fence_contact_margin_px": config.VIRTUAL_FENCE_CONTACT_MARGIN_PX,

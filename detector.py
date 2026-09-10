@@ -66,7 +66,9 @@ class Detector:
             "object detector",
             required=False,
         )
-        LOGGER.info("loading YOLO model %s", config.YOLO_MODEL_PATH)
+        LOGGER.info(
+            "loading YOLO model %s on device=%s", config.YOLO_MODEL_PATH, config.YOLO_DEVICE
+        )
         self.model = YOLO(config.YOLO_MODEL_PATH)
         self.tile_model = None
         if config.ENABLE_TILED_INFERENCE:
@@ -91,7 +93,11 @@ class Detector:
                 "ANPR plate detector",
                 required=True,
             )
-            LOGGER.info("loading regional YOLO plate detector %s", config.ANPR_PLATE_MODEL_PATH)
+            LOGGER.info(
+                "loading regional YOLO plate detector %s on device=%s",
+                config.ANPR_PLATE_MODEL_PATH,
+                config.YOLO_DEVICE,
+            )
             self.plate_model = YOLO(config.ANPR_PLATE_MODEL_PATH)
             try:
                 import easyocr
@@ -171,6 +177,7 @@ class Detector:
             persist=True,
             tracker=config.YOLO_TRACKER,
             imgsz=input_size,
+            device=config.YOLO_DEVICE,
             conf=config.CONFIDENCE_THRESHOLD,
             classes=[config.PERSON_CLASS_ID, *config.VEHICLE_CLASS_IDS],
             verbose=False,
@@ -236,6 +243,7 @@ class Detector:
             results = self.tile_model.predict(
                 tile,
                 conf=config.CONFIDENCE_THRESHOLD,
+                device=config.YOLO_DEVICE,
                 classes=[config.PERSON_CLASS_ID, *config.VEHICLE_CLASS_IDS],
                 verbose=False,
             )
@@ -497,6 +505,7 @@ class Detector:
                 vehicle_crop,
                 conf=config.ANPR_PLATE_DETECTION_CONFIDENCE,
                 imgsz=config.ANPR_PLATE_INPUT_SIZE,
+                device=config.YOLO_DEVICE,
                 verbose=False,
             )[0]
             observations = self._plate_observations(vehicle_crop, offset, result)

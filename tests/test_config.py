@@ -17,14 +17,18 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     assert config.ENABLE_MOTION_SIGNATURE is False
     assert config.ENABLE_TILED_INFERENCE is False
     assert config.ENABLE_NATIVE_FOCUS is False
+    assert config.NATIVE_FOCUS_DEVICE == "cpu"
     assert config.YOLO_TRACKER == "bytetrack.yaml"
+    assert config.YOLO_DEVICE == "cpu"
     assert config.YOLO_INPUT_SIZE == 640
     assert config.EVALUATION_IOU_THRESHOLD == 0.5
     assert config.EVALUATION_MAX_FRAMES == 10_000
     assert config.EVALUATION_HARDWARE_LABEL == "unrecorded"
     assert config.EVALUATION_BUILD_LABEL == "unrecorded"
     assert config.SCRFD_EXECUTION_PROVIDER == "cpu"
+    assert config.FACE_ENHANCEMENT_DEVICE == "cpu"
     assert config.ENABLE_POSTURE_ANALYSIS is False
+    assert config.POSTURE_DEVICE == "cpu"
     assert config.ENABLE_CONTEXTUAL_RISK is False
     assert len(config.ANPR_PLATE_MODEL_SHA256) == 64
     assert config.ANPR_REGIONS == ("IN",)
@@ -39,6 +43,7 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     ("variable", "value", "message"),
     (
         ("IBVAP_YOLO_TRACKER", "botsort.yaml", "supports only bytetrack.yaml"),
+        ("IBVAP_YOLO_DEVICE", "metal", "must be cpu, mps, cuda, or cuda:0"),
         ("IBVAP_YOLO_INPUT_SIZE", "641", "must be divisible by 32"),
         ("IBVAP_NATIVE_FOCUS_CONF_THRESHOLD", "1.1", "must be <= 1"),
         ("IBVAP_EVALUATION_LOW_FPS_PERCENTILE", "60", "must be <= 50"),

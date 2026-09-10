@@ -216,6 +216,7 @@ class PostureAnalysisService:
             )
             return
         self._accepting_jobs.set()
+        LOGGER.info("posture analysis ready on device=%s", self._device)
         self._publish("ready", (), None)
         while not self._stop_event.is_set():
             try:
@@ -328,8 +329,8 @@ def _select_device(torch, setting: str) -> str:
         return "mps"
     if torch.cuda.is_available():
         return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
+    # Background MPS inference has produced unrecoverable native Metal assertions
+    # when combined with other macOS model workers. MPS therefore remains opt-in.
     return "cpu"
 
 

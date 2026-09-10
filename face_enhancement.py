@@ -488,8 +488,8 @@ def _select_torch_device(torch, setting: str):
         return torch.device("mps")
     if torch.cuda.is_available():
         return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
+    # Keep background Metal execution explicit; native MPS failures can terminate
+    # the process before this worker can isolate the exception.
     return torch.device("cpu")
 
 

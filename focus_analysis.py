@@ -294,6 +294,7 @@ class NativeFocusService:
             self._device = self._select_device(config.NATIVE_FOCUS_DEVICE)
             self._model = self._load_model()
             self._accepting_jobs = True
+            LOGGER.info("native focus ready on device=%s", self._device)
             self._set_status("ready", None)
         except Exception as exc:
             LOGGER.exception("Native focus initialization failed")
@@ -445,7 +446,10 @@ class NativeFocusService:
         if cuda_available:
             return "cuda:0"
         if mps_available:
-            return "mps"
+            LOGGER.info(
+                "MPS is available but native-focus auto mode uses CPU for macOS stability; "
+                "request mps explicitly to opt in"
+            )
         return "cpu"
 
     @staticmethod

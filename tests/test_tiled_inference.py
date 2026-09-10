@@ -92,6 +92,7 @@ def test_tiled_failure_preserves_full_frame_tracking(monkeypatch):
     assert detections[0]["source"] == "full-frame"
     assert tracking_calls[0]["tracker"] == "bytetrack.yaml"
     assert tracking_calls[0]["imgsz"] == config.YOLO_INPUT_SIZE
+    assert tracking_calls[0]["device"] == "cpu"
 
 
 def test_confirmed_focus_requests_bounded_tracker_boost_and_only_tracker_assigns_id():
@@ -140,6 +141,7 @@ def test_confirmed_focus_requests_bounded_tracker_boost_and_only_tracker_assigns
 
     assert tracking_calls[0]["imgsz"] == config.NATIVE_FOCUS_TRACK_INPUT_SIZE
     assert tracking_calls[0]["tracker"] == "bytetrack.yaml"
+    assert tracking_calls[0]["device"] == "cpu"
     assert detections[0]["track_id"] == 9
     assert detector.focus_snapshot()["focus"]["authoritative_track_id"] == 9
     assert detector.focus_snapshot()["focus"]["acquisition_state"] == "tracker_acquired"

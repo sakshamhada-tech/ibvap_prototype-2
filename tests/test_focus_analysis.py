@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 import config
@@ -126,6 +127,17 @@ def test_native_focus_process_confirms_source_crop_without_inventing_identity(mo
     assert second["source_target_height"] == 40
     assert second["source_target_height_band"] == "25-48 px"
     assert second["image_jpeg"] == b"source-jpeg"
+
+
+def test_native_focus_auto_device_does_not_implicitly_use_mps(monkeypatch):
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert NativeFocusService._select_device("auto") == "cpu"
+    assert NativeFocusService._select_device("mps") == "mps"
 
 
 def test_native_focus_initialization_failure_is_status_only(monkeypatch):

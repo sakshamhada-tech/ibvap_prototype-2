@@ -106,6 +106,17 @@ def test_scrfd_provider_selection_keeps_coreml_explicit():
         raise AssertionError("unavailable SCRFD provider was accepted")
 
 
+def test_gfpgan_auto_device_does_not_implicitly_use_mps():
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+        device=lambda value: value,
+    )
+
+    assert face_enhancement._select_torch_device(fake_torch, "auto") == "cpu"
+    assert face_enhancement._select_torch_device(fake_torch, "mps") == "mps"
+
+
 def test_model_checksum_sidecar_is_enforced(tmp_path):
     model = tmp_path / "model.onnx"
     model.write_bytes(b"trusted model")

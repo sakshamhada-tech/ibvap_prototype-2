@@ -192,8 +192,8 @@ authorized.
 
 Missing weights, missing dependencies, queue pressure, or inference exceptions
 publish an unavailable/error status and never stop capture, primary detection,
-alerts, recording, or streaming. MPS is selected on supported Apple Silicon,
-then CUDA, with clean CPU fallback.
+alerts, recording, or streaming. CPU is the stable default; `auto` selects CUDA
+when available and otherwise CPU, while MPS requires explicit opt-in.
 
 ### Explainable contextual risk scoring
 
@@ -485,7 +485,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | Posture review | Operator-supplied Ultralytics pose checkpoint in a bounded worker | Disabled; uses core runtime plus external weights |
 | Context signals | Classical centroid geometry plus transparent weighted scoring | Disabled; unvalidated scene heuristics |
 | Audible alerts | Generated WAV + `afplay`/`winsound`/`paplay`/`aplay` | Plays on the server device, not the browser |
-| Acceleration | ONNX Runtime CPU/CUDA with opt-in CoreML; PyTorch MPS/CUDA/CPU | SCRFD defaults to stable CPU; devices remain configurable |
+| Acceleration | ONNX Runtime CPU/CUDA with opt-in CoreML; PyTorch CPU/CUDA with opt-in MPS | All macOS Metal paths are explicit rather than automatic |
 | Container deployment | Docker / Docker Compose | Base image includes core runtime only |
 | HTTPS | Uvicorn certificate/key or trusted reverse proxy | Required outside loopback development |
 
@@ -654,6 +654,7 @@ current working directory.
 | `IBVAP_YOLO_MODEL` | `yolov8n.pt` | Local model path or Ultralytics model setting |
 | `IBVAP_YOLO_MODEL_SHA256` | Bundled model digest | Expected hash; empty disables verification for a custom model |
 | `IBVAP_YOLO_TRACKER` | `bytetrack.yaml` | Explicit authoritative tracker; only ByteTrack is currently accepted |
+| `IBVAP_YOLO_DEVICE` | `cpu` | Core YOLO device: stable `cpu`, or explicit `mps`, `cuda`, `cuda:0` |
 | `IBVAP_YOLO_INPUT_SIZE` | `640` | Full-frame detector side length, divisible by 32, maximum 4096 |
 | `IBVAP_CONFIDENCE_THRESHOLD` | `0.4` | YOLO detection cutoff, range 0–1 |
 | `IBVAP_LOG_LEVEL` | `INFO` | Python log level used by both entry points |
@@ -719,7 +720,7 @@ parameters rather than validated universal values.
 | `IBVAP_NATIVE_FOCUS_PADDING_RATIO` | `0.5` | Context padding around each source candidate |
 | `IBVAP_NATIVE_FOCUS_CONFIRMATION_FRAMES` | `2` | Spatial observations required before tracker request |
 | `IBVAP_NATIVE_FOCUS_TRACK_BOOST_FRAMES` | `30` | Maximum larger-input full-frame tracking frames per request |
-| `IBVAP_NATIVE_FOCUS_DEVICE` | `auto` | `auto`, `cpu`, `mps`, `cuda`, or `cuda:0` |
+| `IBVAP_NATIVE_FOCUS_DEVICE` | `cpu` | `auto` selects CUDA/CPU; MPS is explicit opt-in |
 
 Confidence, crop-size, IoU, result-age, JPEG, queue-poll, and shutdown controls
 are validated settings listed in `.env.example`.
@@ -753,7 +754,7 @@ interpretation, and safe reporting rules are in [`evaluation/README.md`](evaluat
 | `IBVAP_POSTURE_MAX_PEOPLE` | `4` | Maximum person crops per job |
 | `IBVAP_POSTURE_MIN_PERSON_SIZE_PX` | `96` | Minimum box dimension for meaningful keypoints |
 | `IBVAP_POSTURE_SUSTAIN_SECONDS` | `1.5` | Required continuous low-pose duration |
-| `IBVAP_POSTURE_DEVICE` | `auto` | `auto`, `cpu`, `mps`, or `cuda` |
+| `IBVAP_POSTURE_DEVICE` | `cpu` | `auto` selects CUDA/CPU; MPS is explicit opt-in |
 
 Additional posture geometry and state-TTL controls are listed in
 `.env.example`. Missing optional models produce an unavailable status rather
@@ -771,7 +772,7 @@ than failing the primary pipeline.
 | `IBVAP_FACE_ENHANCEMENT_CACHE_TTL_SECONDS` | `10` | Face-cache retention period |
 | `IBVAP_FACE_ENHANCEMENT_JPEG_QUALITY` | `90` | Dashboard face JPEG quality, range 1–100 |
 | `IBVAP_SCRFD_EXECUTION_PROVIDER` | `cpu` | SCRFD provider: stable `cpu`, CUDA-or-CPU `auto`, `cuda`, or opt-in `coreml` |
-| `IBVAP_FACE_ENHANCEMENT_DEVICE` | `auto` | GFPGAN device: `auto`, `cpu`, `mps`, or `cuda` |
+| `IBVAP_FACE_ENHANCEMENT_DEVICE` | `cpu` | GFPGAN device; `auto` selects CUDA/CPU and MPS is explicit opt-in |
 | `IBVAP_SCRFD_CONFIDENCE_THRESHOLD` | `0.6` | SCRFD confidence cutoff |
 | `IBVAP_SCRFD_INPUT_SIZE` | `640` | SCRFD input side; must be divisible by 32 |
 | `IBVAP_SCRFD_MIN_FACE_SIZE_PX` | `32` | Smallest face retained as source review |
@@ -1140,11 +1141,21 @@ using a stronger generative blend.
 
 ### macOS reports a Metal/CoreML command-buffer assertion during face extraction
 
-Set `IBVAP_SCRFD_EXECUTION_PROVIDER=cpu` and restart. CPU is now the default because
-an ONNX Runtime CoreML failure can abort inside native Metal code before the isolated
-Python worker can catch it. `auto` selects CUDA when available and otherwise CPU;
-`coreml` must be requested explicitly. `IBVAP_FACE_ENHANCEMENT_DEVICE` separately
-controls the optional GFPGAN PyTorch device.
+Use the stable CPU profile and restart:
+
+```bash
+IBVAP_YOLO_DEVICE=cpu
+IBVAP_SCRFD_EXECUTION_PROVIDER=cpu
+IBVAP_NATIVE_FOCUS_DEVICE=cpu
+IBVAP_POSTURE_DEVICE=cpu
+IBVAP_FACE_ENHANCEMENT_DEVICE=cpu
+```
+
+A log showing SCRFD on `CPUExecutionProvider` rules out CoreML; a subsequent `AGX...`
+command-buffer assertion points to a PyTorch/Ultralytics MPS path. Core YOLO and all
+optional workers now default to CPU. Worker `auto` modes select CUDA when available and
+otherwise CPU; MPS/CoreML must be requested explicitly because a native Metal failure
+can abort before Python exception isolation runs.
 
 ### ANPR does not start or does not emit a plate
 

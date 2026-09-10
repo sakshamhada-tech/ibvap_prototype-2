@@ -119,6 +119,10 @@ if YOLO_MODEL_SHA256 and not re.fullmatch(r"[0-9a-f]{64}", YOLO_MODEL_SHA256):
 YOLO_TRACKER = os.getenv("IBVAP_YOLO_TRACKER", "bytetrack.yaml").strip()
 if YOLO_TRACKER != "bytetrack.yaml":
     raise ValueError("IBVAP_YOLO_TRACKER currently supports only bytetrack.yaml")
+# CPU avoids native Metal failures on macOS. MPS remains an explicit operator choice.
+YOLO_DEVICE = os.getenv("IBVAP_YOLO_DEVICE", "cpu").strip().lower()
+if YOLO_DEVICE not in {"cpu", "mps", "cuda", "cuda:0"}:
+    raise ValueError("IBVAP_YOLO_DEVICE must be cpu, mps, cuda, or cuda:0")
 YOLO_INPUT_SIZE = _env_int("IBVAP_YOLO_INPUT_SIZE", 640, minimum=32)
 if YOLO_INPUT_SIZE > 4096 or YOLO_INPUT_SIZE % 32:
     raise ValueError("IBVAP_YOLO_INPUT_SIZE must be divisible by 32 and <= 4096")
@@ -201,7 +205,7 @@ if NATIVE_FOCUS_ACQUISITION_IOU > 1.0:
 NATIVE_FOCUS_JPEG_QUALITY = _env_int("IBVAP_NATIVE_FOCUS_JPEG_QUALITY", 90, minimum=1)
 if NATIVE_FOCUS_JPEG_QUALITY > 100:
     raise ValueError("IBVAP_NATIVE_FOCUS_JPEG_QUALITY must be <= 100")
-NATIVE_FOCUS_DEVICE = os.getenv("IBVAP_NATIVE_FOCUS_DEVICE", "auto").strip().lower()
+NATIVE_FOCUS_DEVICE = os.getenv("IBVAP_NATIVE_FOCUS_DEVICE", "cpu").strip().lower()
 if NATIVE_FOCUS_DEVICE not in {"auto", "cpu", "mps", "cuda", "cuda:0"}:
     raise ValueError("IBVAP_NATIVE_FOCUS_DEVICE must be auto, cpu, mps, cuda, or cuda:0")
 
@@ -400,7 +404,7 @@ GFPGAN_MODEL_SHA256 = os.getenv(
 ).lower()
 if not re.fullmatch(r"[0-9a-f]{64}", GFPGAN_MODEL_SHA256):
     raise ValueError("IBVAP_GFPGAN_MODEL_SHA256 must be a 64-character hexadecimal digest")
-FACE_ENHANCEMENT_DEVICE = os.getenv("IBVAP_FACE_ENHANCEMENT_DEVICE", "auto").strip().lower()
+FACE_ENHANCEMENT_DEVICE = os.getenv("IBVAP_FACE_ENHANCEMENT_DEVICE", "cpu").strip().lower()
 if FACE_ENHANCEMENT_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
     raise ValueError("IBVAP_FACE_ENHANCEMENT_DEVICE must be auto, cpu, mps, or cuda")
 
@@ -431,7 +435,7 @@ if POSTURE_MIN_KEYPOINT_CONFIDENCE > 1.0:
 POSTURE_SUSTAIN_SECONDS = _env_float("IBVAP_POSTURE_SUSTAIN_SECONDS", 1.5, minimum=0.1)
 POSTURE_STATE_TTL_SECONDS = _env_float("IBVAP_POSTURE_STATE_TTL_SECONDS", 3.0, minimum=0.1)
 POSTURE_RESULT_MAX_AGE_FRAMES = _env_int("IBVAP_POSTURE_RESULT_MAX_AGE_FRAMES", 45, minimum=1)
-POSTURE_DEVICE = os.getenv("IBVAP_POSTURE_DEVICE", "auto").strip().lower()
+POSTURE_DEVICE = os.getenv("IBVAP_POSTURE_DEVICE", "cpu").strip().lower()
 if POSTURE_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
     raise ValueError("IBVAP_POSTURE_DEVICE must be auto, cpu, mps, or cuda")
 
