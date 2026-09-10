@@ -81,7 +81,6 @@ def test_tiled_failure_preserves_full_frame_tracking(monkeypatch):
     detector = Detector.__new__(Detector)
     detector.model = TrackingModel()
     detector.tile_model = FailingTileModel()
-    detector.firearm_service = None
     detector._frame_number = 0
     detector._tiled_error_active = False
     monkeypatch.setattr(config, "TILED_INFERENCE_INTERVAL_FRAMES", 1)

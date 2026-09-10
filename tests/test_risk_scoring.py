@@ -9,7 +9,6 @@ WEIGHTS = {
     "night": 0.1,
     "fence_approach": 0.2,
     "group_membership": 0.2,
-    "firearm": 0.5,
 }
 
 
@@ -21,7 +20,7 @@ def test_composite_risk_crosses_once_and_explains_contributors():
         RiskSignals(loitering=1, fence_proximity=1, fence_approach=1, group_membership=1),
         1,
     )
-    repeated = scorer.update(7, RiskSignals(fence_contact=1, firearm=1), 2)
+    repeated = scorer.update(7, RiskSignals(fence_contact=1, low_posture=1), 2)
 
     assert low.score < 0.6 and not low.crossed
     assert elevated.score >= 0.6 and elevated.crossed
@@ -38,8 +37,9 @@ def test_one_low_weight_hardcoded_style_signal_does_not_raise_contextual_alert()
 
 def test_risk_state_rearms_and_expires():
     scorer = RiskScorer(threshold=0.5, weights=WEIGHTS, stale_after_seconds=2)
-    assert scorer.update(2, RiskSignals(firearm=1), 0).crossed
+    elevated = RiskSignals(fence_contact=1, loitering=1)
+    assert scorer.update(2, elevated, 0).crossed
     assert not scorer.update(2, RiskSignals(), 1).crossed
-    assert scorer.update(2, RiskSignals(firearm=1), 2).crossed
+    assert scorer.update(2, elevated, 2).crossed
     scorer.expire(5)
     assert scorer.tracked_count == 0

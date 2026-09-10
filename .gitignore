@@ -28,7 +28,6 @@ models/GFPGAN*.pth
 # Optional ANPR weights stay external; source/checksum metadata remains tracked.
 models/indian_plate_yolov8n.pt
 models/yolov8n-pose.pt
-models/firearm_detector.pt
 models/*.part
 models/ibvap-model-*
 

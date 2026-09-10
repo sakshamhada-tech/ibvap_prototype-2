@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import threading
 from pathlib import Path
 
 import cv2
@@ -12,7 +11,6 @@ import numpy as np
 from ultralytics import YOLO
 
 import config
-from firearm_detection import FirearmDetectionService
 from utils.anpr import PlateObservation, combine_ocr_results, identify_plate_region
 
 LOGGER = logging.getLogger(__name__)
@@ -59,24 +57,6 @@ class Detector:
                 )
         self._frame_number = 0
         self._tiled_error_active = False
-        self._firearm_lock = threading.Lock()
-        self._firearm_snapshot = {
-            "status": "disabled" if not config.ENABLE_FIREARM_DETECTION else "loading",
-            "detections": [],
-            "frame_number": None,
-            "message": None,
-        }
-        self.firearm_service = None
-        if config.ENABLE_FIREARM_DETECTION:
-            self.firearm_service = FirearmDetectionService(
-                model_path=config.FIREARM_MODEL_PATH,
-                model_sha256=config.FIREARM_MODEL_SHA256,
-                confidence_threshold=config.FIREARM_CONFIDENCE_THRESHOLD,
-                device=config.FIREARM_DEVICE,
-                on_snapshot=self._update_firearm_snapshot,
-            )
-            self.firearm_service.start()
-
         self.plate_model = None
         self.ocr_reader = None
         self._anpr_inference_error_active = False
@@ -162,11 +142,6 @@ class Detector:
             else:
                 self._tiled_error_active = False
                 detections = self._merge_supplemental(detections, tiled)
-        if (
-            self.firearm_service is not None
-            and self._frame_number % config.FIREARM_INTERVAL_FRAMES == 0
-        ):
-            self.firearm_service.submit(frame, self._frame_number)
         return detections
 
     @staticmethod
@@ -289,30 +264,13 @@ class Detector:
         union = first_area + second_area - intersection
         return intersection / union if union else 0.0
 
-    def firearm_snapshot(self) -> dict:
-        with self._firearm_lock:
-            return {
-                **self._firearm_snapshot,
-                "detections": list(self._firearm_snapshot.get("detections", ())),
-            }
-
-    def _update_firearm_snapshot(self, snapshot: dict) -> None:
-        with self._firearm_lock:
-            self._firearm_snapshot = dict(snapshot)
-
     def reset_tracking(self) -> None:
-        """Clear ByteTrack and optional-worker state after a discontinuity."""
+        """Clear ByteTrack state after a source discontinuity."""
         predictor = getattr(self.model, "predictor", None)
         for tracker in getattr(predictor, "trackers", ()) or ():
             reset = getattr(tracker, "reset", None)
             if callable(reset):
                 reset()
-        if self.firearm_service is not None:
-            self.firearm_service.reset()
-
-    def close(self) -> None:
-        if self.firearm_service is not None:
-            self.firearm_service.close()
 
     def anpr_diagnostics(self) -> dict:
         """Return privacy-safe counters explaining ANPR abstention."""

@@ -11,18 +11,7 @@
         "Explicit IBVAP_POSTURE_MODEL_SHA256",
         "Independent licence, provenance, bias, and accuracy review"
       ]
-    },
-    "firearm": {
-      "configured_path": "models/firearm_detector.pt",
-      "source": null,
-      "sha256": null,
-      "status": "operator-supplied-unapproved",
-      "requirements": [
-        "Ultralytics-compatible fine-tuned detection checkpoint",
-        "Explicit IBVAP_FIREARM_MODEL_SHA256",
-        "Independent licence, training-data, false-positive, and long-range review"
-      ]
     }
   },
-  "policy": "No model is downloaded silently. Missing or unverified optional models leave their worker unavailable while primary analytics continue."
+  "policy": "No model is downloaded silently. A missing or unverified optional model leaves its worker unavailable while primary analytics continue."
 }

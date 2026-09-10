@@ -228,7 +228,6 @@ RISK_WEIGHT_LOW_POSTURE = _env_float("IBVAP_RISK_WEIGHT_LOW_POSTURE", 0.20, mini
 RISK_WEIGHT_NIGHT = _env_float("IBVAP_RISK_WEIGHT_NIGHT", 0.10, minimum=0.0)
 RISK_WEIGHT_FENCE_APPROACH = _env_float("IBVAP_RISK_WEIGHT_FENCE_APPROACH", 0.20, minimum=0.0)
 RISK_WEIGHT_GROUP_MEMBERSHIP = _env_float("IBVAP_RISK_WEIGHT_GROUP_MEMBERSHIP", 0.20, minimum=0.0)
-RISK_WEIGHT_FIREARM = _env_float("IBVAP_RISK_WEIGHT_FIREARM", 0.50, minimum=0.0)
 for _risk_weight_name, _risk_weight in (
     ("IBVAP_RISK_WEIGHT_FENCE_CONTACT", RISK_WEIGHT_FENCE_CONTACT),
     ("IBVAP_RISK_WEIGHT_FENCE_PROXIMITY", RISK_WEIGHT_FENCE_PROXIMITY),
@@ -238,7 +237,6 @@ for _risk_weight_name, _risk_weight in (
     ("IBVAP_RISK_WEIGHT_NIGHT", RISK_WEIGHT_NIGHT),
     ("IBVAP_RISK_WEIGHT_FENCE_APPROACH", RISK_WEIGHT_FENCE_APPROACH),
     ("IBVAP_RISK_WEIGHT_GROUP_MEMBERSHIP", RISK_WEIGHT_GROUP_MEMBERSHIP),
-    ("IBVAP_RISK_WEIGHT_FIREARM", RISK_WEIGHT_FIREARM),
 ):
     if _risk_weight > 1.0:
         raise ValueError(f"{_risk_weight_name} must be <= 1")
@@ -316,23 +314,6 @@ POSTURE_RESULT_MAX_AGE_FRAMES = _env_int("IBVAP_POSTURE_RESULT_MAX_AGE_FRAMES", 
 POSTURE_DEVICE = os.getenv("IBVAP_POSTURE_DEVICE", "auto").strip().lower()
 if POSTURE_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
     raise ValueError("IBVAP_POSTURE_DEVICE must be auto, cpu, mps, or cuda")
-
-# Firearm detections are conservative human-review flags from separate weights.
-ENABLE_FIREARM_DETECTION = _env_bool("IBVAP_ENABLE_FIREARM_DETECTION", False)
-FIREARM_MODEL_PATH = _resolve_path(
-    os.getenv("IBVAP_FIREARM_MODEL_PATH", "models/firearm_detector.pt")
-)
-FIREARM_MODEL_SHA256 = _validate_sha256(
-    "IBVAP_FIREARM_MODEL_SHA256", os.getenv("IBVAP_FIREARM_MODEL_SHA256", "")
-)
-FIREARM_CONFIDENCE_THRESHOLD = _env_float("IBVAP_FIREARM_CONFIDENCE_THRESHOLD", 0.80, minimum=0.0)
-if FIREARM_CONFIDENCE_THRESHOLD > 1.0:
-    raise ValueError("IBVAP_FIREARM_CONFIDENCE_THRESHOLD must be <= 1")
-FIREARM_INTERVAL_FRAMES = _env_int("IBVAP_FIREARM_INTERVAL_FRAMES", 15, minimum=1)
-FIREARM_RESULT_MAX_AGE_FRAMES = _env_int("IBVAP_FIREARM_RESULT_MAX_AGE_FRAMES", 45, minimum=1)
-FIREARM_DEVICE = os.getenv("IBVAP_FIREARM_DEVICE", "auto").strip().lower()
-if FIREARM_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
-    raise ValueError("IBVAP_FIREARM_DEVICE must be auto, cpu, mps, or cuda")
 
 # ANPR is opt-in: it requires separately reviewed Indian plate-detector weights
 # plus EasyOCR and its separately governed recognition weights.
@@ -420,7 +401,6 @@ _known_alarm_events = {
     "VIRTUAL_FENCE_INTRUSION",
     "SUSPICIOUS_LOITERING",
     "GROUP_APPROACH",
-    "FIREARM_DETECTED",
     "CONTEXTUAL_RISK",
     "NIGHT_MOVEMENT",
     "ANPR_READ",

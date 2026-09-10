@@ -13,7 +13,6 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     assert config.ENABLE_MOTION_SIGNATURE is False
     assert config.ENABLE_TILED_INFERENCE is False
     assert config.ENABLE_POSTURE_ANALYSIS is False
-    assert config.ENABLE_FIREARM_DETECTION is False
     assert config.ENABLE_CONTEXTUAL_RISK is False
     assert len(config.ANPR_PLATE_MODEL_SHA256) == 64
     assert config.ANPR_REGIONS == ("IN",)

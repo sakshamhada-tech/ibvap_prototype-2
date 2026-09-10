@@ -23,7 +23,6 @@ Playback = Callable[[Path, float], None]
 
 SUPPORTED_ALARM_EVENTS = (
     "VIRTUAL_FENCE_INTRUSION",
-    "FIREARM_DETECTED",
     "CONTEXTUAL_RISK",
     "GROUP_APPROACH",
     "SUSPICIOUS_LOITERING",
@@ -32,7 +31,6 @@ SUPPORTED_ALARM_EVENTS = (
 )
 _PRIORITIES = {
     "VIRTUAL_FENCE_INTRUSION": 0,
-    "FIREARM_DETECTED": 0,
     "CONTEXTUAL_RISK": 1,
     "GROUP_APPROACH": 1,
     "SUSPICIOUS_LOITERING": 2,
@@ -54,13 +52,6 @@ _PATTERNS = {
         (1050, 0.16),
         (0, 0.05),
         (720, 0.16),
-    ),
-    "FIREARM_DETECTED": (
-        (1180, 0.12),
-        (0, 0.06),
-        (1180, 0.12),
-        (0, 0.06),
-        (880, 0.24),
     ),
     "CONTEXTUAL_RISK": (
         (740, 0.14),

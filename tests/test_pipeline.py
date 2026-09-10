@@ -314,32 +314,6 @@ class FakeGroupDetector(FakeDetector):
         ]
 
 
-class FakeFirearmDetector(FakeDetector):
-    def __init__(self):
-        super().__init__()
-        self.calls = 0
-
-    def track_frame(self, _frame):
-        self.calls += 1
-        return [
-            {
-                "track_id": 9,
-                "class_id": 0,
-                "class_name": "person",
-                "bbox": (0, 0, 30, 40),
-                "centroid": (15, 20),
-                "conf": 0.9,
-            }
-        ]
-
-    def firearm_snapshot(self):
-        return {
-            "status": "ready",
-            "frame_number": self.calls,
-            "detections": [{"bbox": (10, 10, 20, 20), "confidence": 0.91}],
-        }
-
-
 def test_pipeline_emits_group_approach_once(monkeypatch, tmp_path):
     configure_pipeline(monkeypatch, tmp_path)
     monkeypatch.setattr(pipeline, "Detector", FakeGroupDetector)
@@ -359,21 +333,6 @@ def test_pipeline_emits_group_approach_once(monkeypatch, tmp_path):
     group_alerts = [alert for alert in alerts if alert["alert_type"] == "GROUP_APPROACH"]
     assert len(group_alerts) == 1
     assert "tracks 1,2,3" in group_alerts[0]["details"]
-    video_pipeline.close()
-
-
-def test_pipeline_emits_conservative_firearm_review_once(monkeypatch, tmp_path):
-    configure_pipeline(monkeypatch, tmp_path)
-    monkeypatch.setattr(pipeline, "Detector", FakeFirearmDetector)
-    alerts = []
-    video_pipeline = pipeline.VideoPipeline(on_alert=alerts.append, show_overlays=False)
-
-    video_pipeline.process_frame(FakeFrame(), source_time=0)
-    video_pipeline.process_frame(FakeFrame(), source_time=1)
-
-    firearm_alerts = [alert for alert in alerts if alert["alert_type"] == "FIREARM_DETECTED"]
-    assert len(firearm_alerts) == 1
-    assert "human review only" in firearm_alerts[0]["details"]
     video_pipeline.close()
 
 

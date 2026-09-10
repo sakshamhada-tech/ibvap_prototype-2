@@ -75,20 +75,6 @@ def draw_plate(frame, plate_bbox, plate_text: str) -> None:
     )
 
 
-def draw_firearm(frame, detection: dict) -> None:
-    left, top, right, bottom = detection["bbox"]
-    cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 3)
-    cv2.putText(
-        frame,
-        f"FIREARM REVIEW {detection['confidence']:.2f}",
-        (left, max(0, top - 8)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (0, 0, 255),
-        2,
-    )
-
-
 def draw_fence(frame, line) -> None:
     cv2.line(frame, line[0], line[1], COLOR_FENCE, 2)
     cv2.putText(
@@ -218,7 +204,6 @@ class VideoPipeline:
                     "night": config.RISK_WEIGHT_NIGHT,
                     "fence_approach": config.RISK_WEIGHT_FENCE_APPROACH,
                     "group_membership": config.RISK_WEIGHT_GROUP_MEMBERSHIP,
-                    "firearm": config.RISK_WEIGHT_FIREARM,
                 },
                 stale_after_seconds=config.TRACK_STALE_SECONDS,
             )
@@ -250,10 +235,6 @@ class VideoPipeline:
                 on_snapshot=self._update_posture_snapshot,
             )
             self.posture_service.start()
-        self._last_firearm_snapshot_frame = -1
-        self._firearm_alerted_tracks: set[int] = set()
-        self._firearm_signals: dict[int, float] = {}
-        self._firearm_detections: list[dict] = []
         self.anpr_consensus = PlateConsensusTracker(
             min_reads=config.ANPR_MIN_CONSENSUS_READS,
             window_seconds=config.ANPR_CONSENSUS_WINDOW_SECONDS,
@@ -298,7 +279,6 @@ class VideoPipeline:
             "group_approach_tracks": 0,
             "contextual_risk_tracks": 0,
             "posture_status": self._posture_snapshot["status"],
-            "firearm_status": self._detector_firearm_snapshot().get("status", "disabled"),
         }
 
     def process_frame(self, frame, *, source_time: float | None = None):
@@ -364,7 +344,6 @@ class VideoPipeline:
         ):
             self.posture_service.submit(frame, people, self.frame_number, timestamp)
         posture_signals = self._current_posture_signals()
-        firearm_detections = self._consume_firearm_snapshot(detections, timestamp)
         if (
             self.face_enhancer is not None
             and self.frame_number % config.FACE_ENHANCEMENT_INTERVAL_FRAMES == 0
@@ -450,7 +429,6 @@ class VideoPipeline:
                                 self.group_detector is not None
                                 and track_id in self.group_detector.grouped_track_ids
                             ),
-                            firearm=self._firearm_signals.get(track_id, 0.0),
                         ),
                         timestamp,
                     )
@@ -544,12 +522,9 @@ class VideoPipeline:
                     self.risk_scorer.tracked_count if self.risk_scorer else 0
                 ),
                 "posture_status": self._posture_snapshot.get("status", "disabled"),
-                "firearm_status": self._detector_firearm_snapshot().get("status", "disabled"),
             }
         )
         if self.show_overlays:
-            for firearm_detection in firearm_detections:
-                draw_firearm(frame, firearm_detection)
             draw_fence(frame, config.VIRTUAL_FENCE_LINE)
             draw_status_bar(
                 frame,
@@ -578,71 +553,6 @@ class VideoPipeline:
             for signal in signals
             if signal.get("sustained")
         }
-
-    def _detector_firearm_snapshot(self) -> dict:
-        snapshot = getattr(self.detector, "firearm_snapshot", None)
-        return snapshot() if callable(snapshot) else {"status": "disabled", "detections": []}
-
-    def _consume_firearm_snapshot(self, detections: list[dict], timestamp: float) -> list[dict]:
-        snapshot = self._detector_firearm_snapshot()
-        snapshot_frame = snapshot.get("frame_number")
-        if (
-            not isinstance(snapshot_frame, int)
-            or snapshot_frame <= self._last_firearm_snapshot_frame
-        ):
-            if isinstance(snapshot_frame, int) and (
-                self.frame_number - snapshot_frame > config.FIREARM_RESULT_MAX_AGE_FRAMES
-            ):
-                self._firearm_signals.clear()
-                self._firearm_detections = []
-            return list(self._firearm_detections)
-        self._last_firearm_snapshot_frame = snapshot_frame
-        if self.frame_number - snapshot_frame > config.FIREARM_RESULT_MAX_AGE_FRAMES:
-            self._firearm_signals.clear()
-            self._firearm_detections = []
-            return []
-
-        people = [
-            detection
-            for detection in detections
-            if detection["class_name"] == "person" and detection["track_id"] is not None
-        ]
-        associated = set()
-        current_signals = {}
-        firearm_detections = list(snapshot.get("detections", ()))
-        for firearm in firearm_detections:
-            left, top, right, bottom = firearm["bbox"]
-            center = ((left + right) / 2, (top + bottom) / 2)
-            containing = [
-                (
-                    max(
-                        1,
-                        (person["bbox"][2] - person["bbox"][0])
-                        * (person["bbox"][3] - person["bbox"][1]),
-                    ),
-                    person["track_id"],
-                )
-                for person in people
-                if person["bbox"][0] <= center[0] <= person["bbox"][2]
-                and person["bbox"][1] <= center[1] <= person["bbox"][3]
-            ]
-            track_id = min(containing)[1] if containing else 0
-            associated.add(track_id)
-            confidence = float(firearm["confidence"])
-            current_signals[track_id] = max(confidence, current_signals.get(track_id, 0.0))
-            if track_id not in self._firearm_alerted_tracks and self.alert_logger.log(
-                "FIREARM_DETECTED",
-                track_id,
-                f"confidence={confidence:.2f}; flag for human review only",
-                self.frame_number,
-                source_time=timestamp,
-            ):
-                self._remember_alert(f"FIREARM REVIEW: track #{track_id}")
-        self._firearm_alerted_tracks.intersection_update(associated)
-        self._firearm_alerted_tracks.update(associated)
-        self._firearm_signals = current_signals
-        self._firearm_detections = firearm_detections
-        return list(self._firearm_detections)
 
     def _validate_fence(self, frame) -> None:
         height, width = frame.shape[:2]
@@ -714,10 +624,6 @@ class VideoPipeline:
             self.risk_scorer.reset()
         self.anpr_consensus.reset()
         self._stable_plates.clear()
-        self._last_firearm_snapshot_frame = -1
-        self._firearm_alerted_tracks.clear()
-        self._firearm_signals.clear()
-        self._firearm_detections = []
         self.alert_logger.reset_cooldowns()
         self._recent_alerts.clear()
         self._fps_samples.clear()

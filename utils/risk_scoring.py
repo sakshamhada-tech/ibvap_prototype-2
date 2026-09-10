@@ -20,7 +20,6 @@ class RiskSignals:
     night: float = 0.0
     fence_approach: float = 0.0
     group_membership: float = 0.0
-    firearm: float = 0.0
 
 
 @dataclass(frozen=True)
