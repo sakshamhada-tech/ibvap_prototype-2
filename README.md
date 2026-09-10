@@ -20,7 +20,14 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 | Object detection | YOLOv8 COCO person, car, motorcycle, bus, and truck classes | Enabled |
 | Object tracking | Ultralytics tracking with short-lived ByteTrack IDs | Enabled |
 | Virtual fence | Visible-box contact plus centroid segment crossing | Enabled |
-| Loitering | Continuous person observation with movement and gap limits | Enabled |
+| Wide-area loitering | Whole-frame person observation by default; optional polygon scope | Enabled |
+| Group approach | Proximity clusters plus correlated movement toward one fence segment | Optional, disabled |
+| Motion signature | Heuristic centroid-oscillation score for composite risk only | Experimental, disabled |
+| Tiled small-object inference | Cadence-limited overlapping tiles plus cross-tile NMS | Optional, disabled |
+| Low-posture review | Failure-isolated pose worker with size and persistence gates | Experimental, disabled |
+| Firearm review | Separate checksum-gated YOLO worker with conservative threshold | Experimental, disabled |
+| Contextual risk | Explainable config-weighted per-track signal composition | Experimental, disabled |
+| Local VLM scene captioning | Stretch capability intentionally not implemented in this pass | Not implemented |
 | Night movement | Smoothed central-ROI brightness with hysteresis | Enabled |
 | Alert persistence | Rotating CSV with local-system, UTC, and source/media timestamps | Enabled |
 | Server audible alarms | Distinct bounded tones for intrusion and loitering | Enabled |
@@ -69,16 +76,107 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 - Emits once per contact episode, subject to the alert cooldown.
 - Displays the configured line and intrusion state on annotated frames.
 
-### Suspicious loitering
+### Wide-area suspicious loitering
 
-- Applies to tracked people, not vehicles.
+- Applies to tracked people, not vehicles, anywhere in the frame by default;
+  it has no implicit fence-distance gate.
+- `IBVAP_LOITERING_ZONE=anywhere` retains whole-frame behavior. A polygon such
+  as `100,100;1100,100;1100,650;100,650` can explicitly scope it later.
 - Requires a continuous observation window of the configured duration.
-- Resets a person's loitering history if the observation gap exceeds the
-  configured maximum.
+- Resets a person's loitering history after an excessive observation gap or
+  when the track leaves an explicitly configured polygon.
 - Measures movement as the diagonal spread of all centroids retained in the
   window, rather than comparing only the first and last point.
 - Generates `SUSPICIOUS_LOITERING` when duration and movement conditions first
   become active.
+
+### Group/coordinated approach
+
+The optional `GroupApproachDetector` uses no additional ML model. It clusters
+currently visible person tracks by image-plane proximity, calculates velocity
+from short centroid histories, and requires a minimum-size cluster whose
+headings are correlated and whose members make measurable progress toward the
+configured fence segment. `GROUP_APPROACH` is emitted once per qualifying group
+episode and can also contribute to contextual risk.
+
+This is perspective-sensitive image geometry, not proof that people are acting
+in coordination. Track switches, crowd overlap, camera vibration, and an
+uncalibrated fence can all affect it. It defaults off and requires labelled
+scene-specific tuning.
+
+### Motion-signature discrimination signal
+
+The optional motion-signature analyzer reuses loitering trajectory history (and
+therefore the same optional loitering polygon scope) and examines net
+displacement, vertical-displacement sign changes, and oscillation magnitude. It
+returns a bounded score with rough diagnostic categories for
+static, high-frequency/no-net motion, directional rhythmic motion, and rigid
+directional motion. It never emits a standalone alert; only the contextual
+risk scorer can consume it.
+
+This heuristic is unvalidated on real border footage and cannot reliably
+separate humans, animals, and vegetation—especially for tiny blobs. It is not a
+substitute for thermal sensing, calibrated multi-sensor fusion, or a trained
+and independently validated classifier.
+
+### SAHI-style tiled inference
+
+Optional tiled inference keeps normal full-frame tracking active, then on a
+configurable cadence runs the same COCO detector on overlapping full-resolution
+tiles. Tile detections are mapped back to frame coordinates and class-aware NMS
+merges duplicates at tile boundaries. Supplemental detections remain untracked
+until normal full-frame tracking acquires them; the implementation does not
+invent persistent IDs from independent tile predictions.
+
+Tiling can improve recall for some small objects but multiplies inference work,
+can add false positives, and has no real-time guarantee. It defaults off.
+
+### Pose-based low-posture review
+
+The optional `PostureAnalysisService` owns a one-slot worker queue and a
+separately supplied, checksum-verified YOLO pose checkpoint. Only sufficiently
+large tracked person crops are submitted. A conservative combination of box
+aspect ratio, visible-keypoint vertical spread, and sustained duration produces
+a `LOW_POSTURE` signal for contextual scoring. Bending, sitting, falls,
+foreshortening, and occlusion can resemble crawling; no standalone response is
+authorized.
+
+Missing weights, missing dependencies, queue pressure, or inference exceptions
+publish an unavailable/error status and never stop capture, primary detection,
+alerts, recording, or streaming. MPS is selected on supported Apple Silicon,
+then CUDA, with clean CPU fallback.
+
+### Firearm detection for human review
+
+Optional firearm review uses a separate fine-tuned YOLO checkpoint rather than
+pretending COCO vehicle/person weights contain a firearm class. Its model path
+and mandatory expected SHA-256 are operator supplied, inference runs in a
+bounded background worker, and the default confidence threshold is a
+conservative `0.80`. `FIREARM_DETECTED` means **flag for human review**, never
+an automated response.
+
+No firearm or pose weights are distributed or downloaded by this repository;
+operator-supplied model requirements are recorded in
+`models/CONTEXT_MODEL_REQUIREMENTS.json`. Typical firearms occupy too few
+pixels for dependable recognition in wide-area or long-range footage; false
+positives have disproportionate consequences. A
+high model score is not evidence that a firearm is present.
+
+### Explainable contextual risk scoring
+
+The optional `RiskScorer` combines available per-track signals: fence contact
+and proximity, loitering, motion signature, sustained low posture, night mode,
+heading toward the fence, coordinated-group membership, and firearm review
+confidence. Every weight and the alert threshold are environment-configurable.
+The bounded weighted sum has no trained parameters because no labelled risk
+dataset is available.
+
+A low individual signal does not automatically produce contextual escalation.
+Only a threshold crossing emits `CONTEXTUAL_RISK`, once per elevated episode,
+and its CSV/dashboard details list the contributing weighted signals. Existing
+individual event types remain for backward compatibility and operational
+clarity. Contextual risk is a transparent triage aid for human review—not a
+probability, intent inference, threat determination, or automated-action input.
 
 ### Night/low-light movement
 
@@ -98,6 +196,9 @@ The implemented analytics event types are:
 |---|---|
 | `VIRTUAL_FENCE_INTRUSION` | Tracked box contacts the fence or centroid motion crosses it |
 | `SUSPICIOUS_LOITERING` | A continuously observed person remains within the movement limit |
+| `GROUP_APPROACH` | Optional compact person group moves coherently toward the fence |
+| `FIREARM_DETECTED` | Optional separate model exceeds its conservative human-review threshold |
+| `CONTEXTUAL_RISK` | Optional weighted signal combination crosses its review threshold |
 | `NIGHT_MOVEMENT` | A tracked person or vehicle is detected during low-light mode |
 | `ANPR_READ` | Optional ANPR obtains a repeated, quality-weighted, region-valid read for one vehicle track |
 
@@ -126,6 +227,9 @@ The built-in patterns are intentionally short, non-verbal, and severity-coded:
 | Event | Pattern | Default audible |
 |---|---|---:|
 | `VIRTUAL_FENCE_INTRUSION` | Rapid alternating high/low critical tone | Yes |
+| `FIREARM_DETECTED` | Urgent high double pulse and lower review tone | No |
+| `CONTEXTUAL_RISK` | Three-step elevated review tone | No |
+| `GROUP_APPROACH` | Four-step coordinated-approach tone | No |
 | `SUSPICIOUS_LOITERING` | Slower three-pulse rising caution tone | Yes |
 | `NIGHT_MOVEMENT` | Low double pulse | No |
 | `ANPR_READ` | Short two-note confirmation | No |
@@ -157,7 +261,7 @@ python -m scripts.test_alarm intrusion --volume 0.75
 python -m scripts.test_alarm loitering --volume 0.75
 ```
 
-The other accepted test names are `night` and `anpr`.
+The other accepted test names are `group`, `firearm`, `risk`, `night`, and `anpr`.
 
 ### Authenticated web dashboard
 
@@ -290,9 +394,13 @@ Camera index / file / RTSP(S) / HTTP(S)
        ▼            ▼               ▼                ▼
  virtual fence   loitering     night classifier   optional ANPR
        │            │               │                │
-       └────────────┴───────┬───────┴────────────────┘
-                            ▼
-                     AlertLogger → CSV
+       ├────────────┴───────┬───────┴────────────────┤
+       ▼                    ▼                        ▼
+ group/motion signals   contextual scorer    async posture/firearm signals
+       │                    │                        │
+       └────────────────────┴────────────┬───────────┘
+                                        ▼
+                                 AlertLogger → CSV
                             │
                             ├────────→ bounded AlertBroker
                             │                 │
@@ -337,6 +445,10 @@ drawn. Face processing does not alter the primary annotated frame.
 | Face alignment | SCRFD five landmarks + OpenCV affine transform | Source pixels, but geometry is transformed |
 | Generative face preview | Vendored minimal GFPGAN clean inference architecture | Experimental; disabled by default |
 | ANPR | External regional YOLO checkpoint + OpenCV preprocessing + EasyOCR + tracked consensus | Disabled by default; separate dependency lock and weights |
+| Tiled detection | Separate Ultralytics predictor over overlapping tiles | Disabled; synchronous and FPS-expensive |
+| Posture review | Operator-supplied Ultralytics pose checkpoint in a bounded worker | Disabled; uses core runtime plus external weights |
+| Firearm review | Operator-supplied fine-tuned YOLO checkpoint in a bounded worker | Disabled; human-review flag only |
+| Context signals | Classical centroid geometry plus transparent weighted scoring | Disabled; unvalidated scene heuristics |
 | Audible alerts | Generated WAV + `afplay`/`winsound`/`paplay`/`aplay` | Plays on the server device, not the browser |
 | Acceleration | ONNX Runtime CoreML/CUDA/CPU; PyTorch MPS/CUDA/CPU | Selected from available providers/devices |
 | Container deployment | Docker / Docker Compose | Base image includes core runtime only |
@@ -522,6 +634,64 @@ current working directory.
 | `IBVAP_NIGHT_BRIGHTNESS_HYSTERESIS` | `5` | Additional brightness needed to leave night mode |
 | `IBVAP_NIGHT_BRIGHTNESS_SMOOTHING_ALPHA` | `0.15` | Exponential smoothing coefficient |
 | `IBVAP_NIGHT_BRIGHTNESS_ROI_MARGIN` | `0.05` | Fraction removed from each brightness-ROI edge |
+| `IBVAP_LOITERING_ZONE` | `anywhere` | Whole frame or polygon `x,y;x,y;x,y` |
+
+### Context-aware detection
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `IBVAP_ENABLE_GROUP_APPROACH` | `false` | Enable classical coordinated-group signal/alert |
+| `IBVAP_GROUP_MIN_SIZE` | `3` | Minimum people in a candidate group |
+| `IBVAP_GROUP_PROXIMITY_PX` | `160` | Image-plane clustering distance |
+| `IBVAP_GROUP_APPROACH_WINDOW_SECONDS` | `3` | Heading/velocity history window |
+| `IBVAP_GROUP_MIN_SPEED_PX_PER_SECOND` | `5` | Reject stationary group members |
+| `IBVAP_GROUP_HEADING_SIMILARITY` | `0.75` | Minimum mean heading coherence, range 0–1 |
+| `IBVAP_GROUP_MIN_FENCE_PROGRESS_PX` | `12` | Required reduction in fence distance |
+| `IBVAP_ENABLE_MOTION_SIGNATURE` | `false` | Enable unvalidated trajectory heuristic |
+| `IBVAP_MOTION_SIGNATURE_WINDOW_SECONDS` | `3` | Trajectory-analysis window |
+| `IBVAP_MOTION_SIGNATURE_MIN_SAMPLES` | `8` | Samples needed for full signal confidence |
+| `IBVAP_ENABLE_CONTEXTUAL_RISK` | `false` | Enable weighted contextual review alerts |
+| `IBVAP_RISK_ALERT_THRESHOLD` | `0.65` | Bounded score threshold, range 0–1 |
+| `IBVAP_RISK_FENCE_PROXIMITY_PX` | `180` | Distance at which fence proximity begins contributing |
+| `IBVAP_RISK_WEIGHT_*` | varies | Individual transparent signal weights; see `.env.example` |
+
+Motion path/net-displacement, oscillation scales, category scores, and every
+risk weight are also configurable in `.env.example`; they are scene-tuning
+parameters rather than validated universal values.
+
+### Tiled inference
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `IBVAP_ENABLE_TILED_INFERENCE` | `false` | Enable cadence-limited supplemental tile inference |
+| `IBVAP_TILE_SIZE` | `640` | Square tile side in source pixels |
+| `IBVAP_TILE_OVERLAP` | `0.20` | Fractional overlap, range 0–0.9 |
+| `IBVAP_TILED_INFERENCE_INTERVAL_FRAMES` | `30` | Expensive tiled-inference cadence |
+| `IBVAP_TILED_INFERENCE_NMS_IOU` | `0.50` | Cross-tile class-aware NMS threshold |
+
+### Low-posture and firearm review
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `IBVAP_ENABLE_POSTURE_ANALYSIS` | `false` | Enable isolated pose worker |
+| `IBVAP_POSTURE_MODEL_PATH` | `models/yolov8n-pose.pt` | Operator-supplied pose checkpoint |
+| `IBVAP_POSTURE_MODEL_SHA256` | empty | Mandatory reviewed digest when enabled |
+| `IBVAP_POSTURE_CONFIDENCE_THRESHOLD` | `0.60` | Pose confidence gate |
+| `IBVAP_POSTURE_INTERVAL_FRAMES` | `15` | Pose submission cadence |
+| `IBVAP_POSTURE_MAX_PEOPLE` | `4` | Maximum person crops per job |
+| `IBVAP_POSTURE_MIN_PERSON_SIZE_PX` | `96` | Minimum box dimension for meaningful keypoints |
+| `IBVAP_POSTURE_SUSTAIN_SECONDS` | `1.5` | Required continuous low-pose duration |
+| `IBVAP_POSTURE_DEVICE` | `auto` | `auto`, `cpu`, `mps`, or `cuda` |
+| `IBVAP_ENABLE_FIREARM_DETECTION` | `false` | Enable isolated firearm-review worker |
+| `IBVAP_FIREARM_MODEL_PATH` | `models/firearm_detector.pt` | Operator-supplied fine-tuned checkpoint |
+| `IBVAP_FIREARM_MODEL_SHA256` | empty | Mandatory reviewed digest when enabled |
+| `IBVAP_FIREARM_CONFIDENCE_THRESHOLD` | `0.80` | Conservative human-review confidence gate |
+| `IBVAP_FIREARM_INTERVAL_FRAMES` | `15` | Firearm worker submission cadence |
+| `IBVAP_FIREARM_DEVICE` | `auto` | `auto`, `cpu`, `mps`, or `cuda` |
+
+Additional posture geometry and state-TTL controls, plus firearm result-age
+bounds, are listed in `.env.example`. Missing optional models produce an
+unavailable status rather than failing the primary pipeline.
 
 ### Face source review and GFPGAN
 
@@ -628,6 +798,40 @@ current working directory.
 | `IBVAP_TLS_CERTFILE` | none | Direct-TLS certificate path |
 | `IBVAP_TLS_KEYFILE` | none | Direct-TLS private-key path |
 | `IBVAP_FORWARDED_ALLOW_IPS` | `127.0.0.1` | Addresses trusted to supply forwarded headers |
+
+### Enabling context features for a controlled demo
+
+All new context features are disabled unless explicitly selected. The
+model-free signals can be enabled together after calibrating the fence and
+reviewing the defaults against labelled footage:
+
+```bash
+export IBVAP_ENABLE_GROUP_APPROACH=true
+export IBVAP_ENABLE_MOTION_SIGNATURE=true
+export IBVAP_ENABLE_CONTEXTUAL_RISK=true
+```
+
+Tiling is independent and expensive:
+
+```bash
+export IBVAP_ENABLE_TILED_INFERENCE=true
+```
+
+Posture and firearm review require operator-supplied weights and exact hashes;
+there is intentionally no automatic downloader:
+
+```bash
+export IBVAP_ENABLE_POSTURE_ANALYSIS=true
+export IBVAP_POSTURE_MODEL_PATH=/reviewed/models/pose.pt
+export IBVAP_POSTURE_MODEL_SHA256="REPLACE_WITH_EXACT_64_CHARACTER_HEX_DIGEST"
+export IBVAP_ENABLE_FIREARM_DETECTION=true
+export IBVAP_FIREARM_MODEL_PATH=/reviewed/models/firearm.pt
+export IBVAP_FIREARM_MODEL_SHA256="REPLACE_WITH_EXACT_64_CHARACTER_HEX_DIGEST"
+```
+
+Replace each digest placeholder before starting the process. If a model is missing,
+unverified, or incompatible, its worker reports `unavailable`/`error` while the
+primary detector and dashboard continue.
 
 ## Running locally with `main.py`
 
@@ -969,13 +1173,15 @@ make check
 4. a Bandit static security scan; and
 5. vulnerability audits of runtime, ANPR, face, and development locks.
 
-The current suite contains 126 unit/integration tests covering geometry, fence
+The current suite contains 151 unit/integration tests covering geometry, fence
 contact, loitering continuity, source-time behavior, alert cooldown/rotation,
 bounded broadcast, authentication, sessions, host/origin controls, rate limits,
 source parsing, server recording failure isolation, audible-alarm patterns,
 face quality gates, regional plate normalization/validation, OCR token ordering,
-weighted track consensus, ANPR pipeline gating/reset, checksum enforcement, and
-licence-gated model acquisition. The configured 85% coverage threshold and
+weighted track consensus, ANPR pipeline gating/reset, wide-area loitering,
+group-approach episodes, motion-signature score direction, tile remapping/NMS,
+posture persistence, firearm threshold/failure isolation, contextual-risk
+crossings, checksum enforcement, and licence-gated model acquisition. The configured 85% coverage threshold and
 reported coverage apply to `utils` and `security`; they are not a claim of whole-system
 or ML-model coverage.
 
@@ -1038,6 +1244,24 @@ independent penetration test.
   exposure changes, infrared mode, or actual time of day.
 - Alert cooldowns reduce repetition but are not event deduplication across
   cameras, processes, or restarts.
+- Motion signatures cannot provide reliable 100 m+ human/animal/vegetation
+  discrimination without appropriate optics, thermal input, labelled data, and
+  validated sensor fusion; the implemented score is only a best-effort aid.
+- Group approach is image-plane clustering and heading correlation, not intent
+  recognition or proof of coordination.
+- Tiled inference may improve small-object recall but can substantially reduce
+  FPS and has no real-time guarantee on underpowered hardware.
+- Low-posture geometry is not reliable for tiny, occluded, or distant people and
+  cannot distinguish crawling from every fall, bend, or seated posture.
+- Firearm detection is not claimed reliable at long range, where the object may
+  occupy only a few pixels. Every result requires human review and must never
+  trigger an automated response.
+- Contextual risk is a tunable weighted heuristic, not a calibrated probability,
+  intent classifier, or authorization for automated action.
+- No weather robustness for fog, dust, snow, or severe rain is claimed; those
+  conditions require appropriate cameras, sensors, enclosures, and validation.
+- Local VLM scene captioning is not implemented in this pass. No cloud API is
+  called, and no caption can independently trigger an alert.
 
 ### Faces and identity
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 from pathlib import Path
 
 import cv2
@@ -11,6 +12,7 @@ import numpy as np
 from ultralytics import YOLO
 
 import config
+from firearm_detection import FirearmDetectionService
 from utils.anpr import PlateObservation, combine_ocr_results, identify_plate_region
 
 LOGGER = logging.getLogger(__name__)
@@ -45,6 +47,35 @@ class Detector:
         )
         LOGGER.info("loading YOLO model %s", config.YOLO_MODEL_PATH)
         self.model = YOLO(config.YOLO_MODEL_PATH)
+        self.tile_model = None
+        if config.ENABLE_TILED_INFERENCE:
+            try:
+                # A separate predictor prevents tile predictions from mutating
+                # the callbacks/state owned by the full-frame tracker.
+                self.tile_model = YOLO(config.YOLO_MODEL_PATH)
+            except Exception:
+                LOGGER.exception(
+                    "tiled detector initialization failed; full-frame tracking continues"
+                )
+        self._frame_number = 0
+        self._tiled_error_active = False
+        self._firearm_lock = threading.Lock()
+        self._firearm_snapshot = {
+            "status": "disabled" if not config.ENABLE_FIREARM_DETECTION else "loading",
+            "detections": [],
+            "frame_number": None,
+            "message": None,
+        }
+        self.firearm_service = None
+        if config.ENABLE_FIREARM_DETECTION:
+            self.firearm_service = FirearmDetectionService(
+                model_path=config.FIREARM_MODEL_PATH,
+                model_sha256=config.FIREARM_MODEL_SHA256,
+                confidence_threshold=config.FIREARM_CONFIDENCE_THRESHOLD,
+                device=config.FIREARM_DEVICE,
+                on_snapshot=self._update_firearm_snapshot,
+            )
+            self.firearm_service.start()
 
         self.plate_model = None
         self.ocr_reader = None
@@ -102,7 +133,14 @@ class Detector:
             )
 
     def track_frame(self, frame) -> list[dict]:
-        """Return relevant YOLO detections, including temporarily untracked boxes."""
+        """Track the full frame and optionally add cadence-limited tiled detections.
+
+        Full-frame tracking always runs, preserving ByteTrack continuity. Tiled
+        detections are supplemental and remain untracked until the normal
+        detector subsequently acquires them; this limitation is preferable to
+        inventing track identities across independent tile predictions.
+        """
+        self._frame_number += 1
         results = self.model.track(
             frame,
             persist=True,
@@ -110,45 +148,171 @@ class Detector:
             classes=[config.PERSON_CLASS_ID, *config.VEHICLE_CLASS_IDS],
             verbose=False,
         )
-        if not results or results[0].boxes is None:
-            return []
+        detections = self._result_detections(results[0] if results else None, include_tracks=True)
+        if (
+            self.tile_model is not None
+            and self._frame_number % config.TILED_INFERENCE_INTERVAL_FRAMES == 0
+        ):
+            try:
+                tiled = self._tiled_detections(frame)
+            except Exception:
+                if not self._tiled_error_active:
+                    LOGGER.exception("tiled inference failed; full-frame tracking will continue")
+                self._tiled_error_active = True
+            else:
+                self._tiled_error_active = False
+                detections = self._merge_supplemental(detections, tiled)
+        if (
+            self.firearm_service is not None
+            and self._frame_number % config.FIREARM_INTERVAL_FRAMES == 0
+        ):
+            self.firearm_service.submit(frame, self._frame_number)
+        return detections
 
-        boxes = results[0].boxes
+    @staticmethod
+    def tile_bounds(
+        frame_width: int,
+        frame_height: int,
+        tile_size: int,
+        overlap: float,
+    ) -> tuple[tuple[int, int, int, int], ...]:
+        """Cover a frame with overlapping edge-aligned tiles."""
+        step = max(1, int(tile_size * (1.0 - overlap)))
+
+        def starts(length: int) -> list[int]:
+            if length <= tile_size:
+                return [0]
+            values = list(range(0, max(1, length - tile_size + 1), step))
+            final = length - tile_size
+            if values[-1] != final:
+                values.append(final)
+            return values
+
+        return tuple(
+            (x, y, min(frame_width, x + tile_size), min(frame_height, y + tile_size))
+            for y in starts(frame_height)
+            for x in starts(frame_width)
+        )
+
+    def _tiled_detections(self, frame) -> list[dict]:
+        height, width = frame.shape[:2]
+        detections = []
+        for left, top, right, bottom in self.tile_bounds(
+            width, height, config.TILE_SIZE, config.TILE_OVERLAP
+        ):
+            tile = frame[top:bottom, left:right]
+            results = self.tile_model.predict(
+                tile,
+                conf=config.CONFIDENCE_THRESHOLD,
+                classes=[config.PERSON_CLASS_ID, *config.VEHICLE_CLASS_IDS],
+                verbose=False,
+            )
+            mapped = self._result_detections(results[0] if results else None, include_tracks=False)
+            for detection in mapped:
+                x1, y1, x2, y2 = detection["bbox"]
+                detection["bbox"] = (x1 + left, y1 + top, x2 + left, y2 + top)
+                detection["centroid"] = (
+                    detection["centroid"][0] + left,
+                    detection["centroid"][1] + top,
+                )
+                detections.append(detection)
+        return self._nms(detections, config.TILED_INFERENCE_NMS_IOU)
+
+    @staticmethod
+    def _result_detections(result, *, include_tracks: bool) -> list[dict]:
+        boxes = getattr(result, "boxes", None)
+        if boxes is None:
+            return []
         coordinates = boxes.xyxy.cpu().numpy()
         class_ids = boxes.cls.cpu().numpy()
         confidences = boxes.conf.cpu().numpy()
-        track_ids = boxes.id.cpu().numpy() if boxes.id is not None else [None] * len(coordinates)
-
+        raw_ids = getattr(boxes, "id", None) if include_tracks else None
+        track_ids = raw_ids.cpu().numpy() if raw_ids is not None else [None] * len(coordinates)
         detections = []
         for box, raw_track_id, raw_class_id, confidence in zip(
             coordinates, track_ids, class_ids, confidences, strict=True
         ):
-            x1, y1, x2, y2 = box
+            x1, y1, x2, y2 = (float(value) for value in box)
             class_id = int(raw_class_id)
-            class_name = (
-                "person"
-                if class_id == config.PERSON_CLASS_ID
-                else config.VEHICLE_CLASS_IDS.get(class_id, f"class_{class_id}")
-            )
             detections.append(
                 {
                     "track_id": None if raw_track_id is None else int(raw_track_id),
                     "class_id": class_id,
-                    "class_name": class_name,
+                    "class_name": (
+                        "person"
+                        if class_id == config.PERSON_CLASS_ID
+                        else config.VEHICLE_CLASS_IDS.get(class_id, f"class_{class_id}")
+                    ),
                     "bbox": (int(x1), int(y1), int(x2), int(y2)),
                     "centroid": ((x1 + x2) / 2, (y1 + y2) / 2),
                     "conf": float(confidence),
+                    "source": "full-frame" if include_tracks else "tile",
                 }
             )
         return detections
 
+    @classmethod
+    def _nms(cls, detections: list[dict], threshold: float) -> list[dict]:
+        kept = []
+        for candidate in sorted(detections, key=lambda item: item["conf"], reverse=True):
+            if any(
+                candidate["class_id"] == existing["class_id"]
+                and cls._iou(candidate["bbox"], existing["bbox"]) > threshold
+                for existing in kept
+            ):
+                continue
+            kept.append(candidate)
+        return kept
+
+    @classmethod
+    def _merge_supplemental(cls, tracked: list[dict], tiled: list[dict]) -> list[dict]:
+        merged = list(tracked)
+        for candidate in tiled:
+            if any(
+                candidate["class_id"] == existing["class_id"]
+                and cls._iou(candidate["bbox"], existing["bbox"]) > config.TILED_INFERENCE_NMS_IOU
+                for existing in merged
+            ):
+                continue
+            merged.append(candidate)
+        return merged
+
+    @staticmethod
+    def _iou(first, second) -> float:
+        left = max(first[0], second[0])
+        top = max(first[1], second[1])
+        right = min(first[2], second[2])
+        bottom = min(first[3], second[3])
+        intersection = max(0, right - left) * max(0, bottom - top)
+        first_area = max(0, first[2] - first[0]) * max(0, first[3] - first[1])
+        second_area = max(0, second[2] - second[0]) * max(0, second[3] - second[1])
+        union = first_area + second_area - intersection
+        return intersection / union if union else 0.0
+
+    def firearm_snapshot(self) -> dict:
+        with self._firearm_lock:
+            return {
+                **self._firearm_snapshot,
+                "detections": list(self._firearm_snapshot.get("detections", ())),
+            }
+
+    def _update_firearm_snapshot(self, snapshot: dict) -> None:
+        with self._firearm_lock:
+            self._firearm_snapshot = dict(snapshot)
+
     def reset_tracking(self) -> None:
-        """Clear ByteTrack state after a source discontinuity or reconnect."""
+        """Clear ByteTrack and optional-worker state after a discontinuity."""
         predictor = getattr(self.model, "predictor", None)
         for tracker in getattr(predictor, "trackers", ()) or ():
             reset = getattr(tracker, "reset", None)
             if callable(reset):
                 reset()
+        if self.firearm_service is not None:
+            self.firearm_service.reset()
+
+    def close(self) -> None:
+        if self.firearm_service is not None:
+            self.firearm_service.close()
 
     def anpr_diagnostics(self) -> dict:
         """Return privacy-safe counters explaining ANPR abstention."""

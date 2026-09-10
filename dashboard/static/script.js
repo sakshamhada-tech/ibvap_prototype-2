@@ -1,6 +1,9 @@
 const MAX_ALERTS_SHOWN = 40;
 const ALERT_META = {
   VIRTUAL_FENCE_INTRUSION: { level: "critical", label: "Fence intrusion" },
+  FIREARM_DETECTED: { level: "critical", label: "Firearm review" },
+  CONTEXTUAL_RISK: { level: "critical", label: "Contextual risk" },
+  GROUP_APPROACH: { level: "caution", label: "Group approach" },
   SUSPICIOUS_LOITERING: { level: "caution", label: "Loitering" },
   NIGHT_MOVEMENT: { level: "caution", label: "Night movement" },
   ANPR_READ: { level: "info", label: "Plate read" },

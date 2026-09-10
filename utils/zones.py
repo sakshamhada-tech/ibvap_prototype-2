@@ -48,6 +48,25 @@ def segments_intersect(p1: Point, p2: Point, p3: Point, p4: Point) -> bool:
     )
 
 
+def point_in_polygon(point: Point, polygon: tuple[Point, ...] | None) -> bool:
+    """Return whether a point is inside/on an optional polygon; ``None`` means anywhere."""
+    if polygon is None:
+        return True
+    inside = False
+    previous = polygon[-1]
+    for current in polygon:
+        if _on_segment(previous, current, point):
+            return True
+        if (current[1] > point[1]) != (previous[1] > point[1]):
+            intersection_x = (previous[0] - current[0]) * (point[1] - current[1]) / (
+                previous[1] - current[1]
+            ) + current[0]
+            if point[0] < intersection_x:
+                inside = not inside
+        previous = current
+    return inside
+
+
 def segment_intersects_box(
     start: Point,
     end: Point,
@@ -158,6 +177,10 @@ class VirtualFence:
         for track_id in stale_ids:
             del self._last_observation[track_id]
 
+    def is_touching(self, track_id: int) -> bool:
+        observation = self._last_observation.get(track_id)
+        return bool(observation and observation[2])
+
     def reset(self) -> None:
         self._last_observation.clear()
 
@@ -197,7 +220,17 @@ class LoiteringDetector:
         self._last_seen: dict[int, float] = {}
         self._active: set[int] = set()
 
-    def update(self, track_id: int, centroid: Point, timestamp: float) -> LoiteringState:
+    def update(
+        self,
+        track_id: int,
+        centroid: Point,
+        timestamp: float,
+        *,
+        in_scope: bool = True,
+    ) -> LoiteringState:
+        if not in_scope:
+            self._reset_track(track_id)
+            return LoiteringState(active=False, started=False)
         previous_seen = self._last_seen.get(track_id)
         if (
             previous_seen is None
@@ -245,6 +278,10 @@ class LoiteringDetector:
         self._history.pop(track_id, None)
         self._last_seen.pop(track_id, None)
         self._active.discard(track_id)
+
+    def history(self, track_id: int) -> tuple[tuple[float, Point], ...]:
+        """Expose immutable trajectory samples for cheap derived motion signals."""
+        return tuple(self._history.get(track_id, ()))
 
     def reset(self) -> None:
         self._history.clear()

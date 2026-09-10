@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from collections import deque
 
@@ -13,9 +14,13 @@ import numpy as np
 import config
 from detector import Detector
 from face_enhancement import FaceEnhancementService
+from posture_analysis import PostureAnalysisService
 from utils.alert_logger import AlertLogger
 from utils.anpr import PlateConsensusTracker
-from utils.zones import LoiteringDetector, LoiteringState, VirtualFence
+from utils.group_behavior import GroupApproachDetector, point_to_segment_distance
+from utils.motion_signature import MotionSignatureAnalyzer
+from utils.risk_scoring import RiskScorer, RiskSignals
+from utils.zones import LoiteringDetector, LoiteringState, VirtualFence, point_in_polygon
 
 LOGGER = logging.getLogger(__name__)
 COLOR_PERSON = (0, 200, 0)
@@ -66,6 +71,20 @@ def draw_plate(frame, plate_bbox, plate_text: str) -> None:
         cv2.FONT_HERSHEY_SIMPLEX,
         0.5,
         COLOR_PLATE,
+        2,
+    )
+
+
+def draw_firearm(frame, detection: dict) -> None:
+    left, top, right, bottom = detection["bbox"]
+    cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 3)
+    cv2.putText(
+        frame,
+        f"FIREARM REVIEW {detection['confidence']:.2f}",
+        (left, max(0, top - 8)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (0, 0, 255),
         2,
     )
 
@@ -153,6 +172,88 @@ class VideoPipeline:
             max_observation_gap_seconds=config.TRACK_MAX_OBSERVATION_GAP_SECONDS,
             stale_after_seconds=config.TRACK_STALE_SECONDS,
         )
+        self.group_detector = (
+            GroupApproachDetector(
+                fence_line=config.VIRTUAL_FENCE_LINE,
+                minimum_size=config.GROUP_MIN_SIZE,
+                proximity_pixels=config.GROUP_PROXIMITY_PX,
+                window_seconds=config.GROUP_APPROACH_WINDOW_SECONDS,
+                minimum_speed_pixels_per_second=config.GROUP_MIN_SPEED_PX_PER_SECOND,
+                heading_similarity=config.GROUP_HEADING_SIMILARITY,
+                minimum_fence_progress_pixels=config.GROUP_MIN_FENCE_PROGRESS_PX,
+                stale_after_seconds=config.TRACK_STALE_SECONDS,
+            )
+            if config.ENABLE_GROUP_APPROACH or config.ENABLE_CONTEXTUAL_RISK
+            else None
+        )
+        self.motion_analyzer = (
+            MotionSignatureAnalyzer(
+                window_seconds=config.MOTION_SIGNATURE_WINDOW_SECONDS,
+                minimum_samples=config.MOTION_SIGNATURE_MIN_SAMPLES,
+                static_path_threshold_pixels=config.MOTION_SIGNATURE_STATIC_PATH_PX,
+                vegetation_max_net_displacement_pixels=(
+                    config.MOTION_SIGNATURE_VEGETATION_MAX_NET_PX
+                ),
+                high_frequency_zero_crossing_ratio=(config.MOTION_SIGNATURE_HIGH_FREQUENCY_RATIO),
+                displacement_scale_pixels=config.MOTION_SIGNATURE_DISPLACEMENT_SCALE_PX,
+                oscillation_scale_pixels=config.MOTION_SIGNATURE_OSCILLATION_SCALE_PX,
+                static_score=config.MOTION_SIGNATURE_STATIC_SCORE,
+                vegetation_score=config.MOTION_SIGNATURE_VEGETATION_SCORE,
+                gait_score=config.MOTION_SIGNATURE_GAIT_SCORE,
+                rigid_score=config.MOTION_SIGNATURE_RIGID_SCORE,
+                ambiguous_score=config.MOTION_SIGNATURE_AMBIGUOUS_SCORE,
+            )
+            if config.ENABLE_MOTION_SIGNATURE
+            else None
+        )
+        self.risk_scorer = (
+            RiskScorer(
+                threshold=config.RISK_ALERT_THRESHOLD,
+                weights={
+                    "fence_contact": config.RISK_WEIGHT_FENCE_CONTACT,
+                    "fence_proximity": config.RISK_WEIGHT_FENCE_PROXIMITY,
+                    "loitering": config.RISK_WEIGHT_LOITERING,
+                    "motion_signature": config.RISK_WEIGHT_MOTION_SIGNATURE,
+                    "low_posture": config.RISK_WEIGHT_LOW_POSTURE,
+                    "night": config.RISK_WEIGHT_NIGHT,
+                    "fence_approach": config.RISK_WEIGHT_FENCE_APPROACH,
+                    "group_membership": config.RISK_WEIGHT_GROUP_MEMBERSHIP,
+                    "firearm": config.RISK_WEIGHT_FIREARM,
+                },
+                stale_after_seconds=config.TRACK_STALE_SECONDS,
+            )
+            if config.ENABLE_CONTEXTUAL_RISK
+            else None
+        )
+        self._posture_lock = threading.Lock()
+        self._posture_snapshot = {
+            "status": "disabled" if not config.ENABLE_POSTURE_ANALYSIS else "loading",
+            "signals": [],
+            "frame_number": None,
+            "message": None,
+        }
+        self.posture_service = None
+        if config.ENABLE_POSTURE_ANALYSIS:
+            self.posture_service = PostureAnalysisService(
+                model_path=config.POSTURE_MODEL_PATH,
+                model_sha256=config.POSTURE_MODEL_SHA256,
+                confidence_threshold=config.POSTURE_CONFIDENCE_THRESHOLD,
+                minimum_person_size_px=config.POSTURE_MIN_PERSON_SIZE_PX,
+                maximum_people=config.POSTURE_MAX_PEOPLE,
+                minimum_visible_keypoints=config.POSTURE_MIN_VISIBLE_KEYPOINTS,
+                minimum_keypoint_confidence=config.POSTURE_MIN_KEYPOINT_CONFIDENCE,
+                minimum_aspect_ratio=config.POSTURE_LOW_ASPECT_RATIO,
+                maximum_vertical_spread_ratio=config.POSTURE_MAX_VERTICAL_SPREAD_RATIO,
+                sustain_seconds=config.POSTURE_SUSTAIN_SECONDS,
+                state_ttl_seconds=config.POSTURE_STATE_TTL_SECONDS,
+                device=config.POSTURE_DEVICE,
+                on_snapshot=self._update_posture_snapshot,
+            )
+            self.posture_service.start()
+        self._last_firearm_snapshot_frame = -1
+        self._firearm_alerted_tracks: set[int] = set()
+        self._firearm_signals: dict[int, float] = {}
+        self._firearm_detections: list[dict] = []
         self.anpr_consensus = PlateConsensusTracker(
             min_reads=config.ANPR_MIN_CONSENSUS_READS,
             window_seconds=config.ANPR_CONSENSUS_WINDOW_SECONDS,
@@ -194,6 +295,10 @@ class VideoPipeline:
                 "consensus_tracks": 0,
                 "stable_reads": 0,
             },
+            "group_approach_tracks": 0,
+            "contextual_risk_tracks": 0,
+            "posture_status": self._posture_snapshot["status"],
+            "firearm_status": self._detector_firearm_snapshot().get("status", "disabled"),
         }
 
     def process_frame(self, frame, *, source_time: float | None = None):
@@ -228,29 +333,58 @@ class VideoPipeline:
         detections = self.detector.track_frame(frame)
         people_count = sum(det["class_name"] == "person" for det in detections)
         vehicle_count = len(detections) - people_count
+        people = [
+            (detection["track_id"], detection["bbox"])
+            for detection in detections
+            if detection["class_name"] == "person" and detection["track_id"] is not None
+        ]
+        person_centroids = [
+            (detection["track_id"], detection["centroid"])
+            for detection in detections
+            if detection["class_name"] == "person" and detection["track_id"] is not None
+        ]
+        group_events = (
+            self.group_detector.update(person_centroids, timestamp) if self.group_detector else ()
+        )
+        if config.ENABLE_GROUP_APPROACH:
+            for event in group_events:
+                group_id = min(event.track_ids)
+                if self.alert_logger.log(
+                    "GROUP_APPROACH",
+                    group_id,
+                    "coordinated fence approach by tracks "
+                    + ",".join(str(track_id) for track_id in event.track_ids),
+                    self.frame_number,
+                    source_time=timestamp,
+                ):
+                    self._remember_alert(f"GROUP APPROACH: {len(event.track_ids)} people")
+        if (
+            self.posture_service is not None
+            and self.frame_number % config.POSTURE_INTERVAL_FRAMES == 0
+        ):
+            self.posture_service.submit(frame, people, self.frame_number, timestamp)
+        posture_signals = self._current_posture_signals()
+        firearm_detections = self._consume_firearm_snapshot(detections, timestamp)
         if (
             self.face_enhancer is not None
             and self.frame_number % config.FACE_ENHANCEMENT_INTERVAL_FRAMES == 0
         ):
-            people = [
-                (detection["track_id"], detection["bbox"])
-                for detection in detections
-                if detection["class_name"] == "person" and detection["track_id"] is not None
-            ]
             self.face_enhancer.submit(frame, people, self.frame_number)
 
         for detection in detections:
             track_id = detection["track_id"]
             class_name = detection["class_name"]
             loitering = LoiteringState(active=False, started=False)
+            fence_contact = False
 
             if track_id is not None:
-                if self.fence.check_crossing(
+                fence_contact = self.fence.check_crossing(
                     track_id,
                     detection["centroid"],
                     timestamp,
                     bounds=detection["bbox"],
-                ):
+                )
+                if fence_contact:
                     night_tag = " (night)" if is_night else ""
                     if self.alert_logger.log(
                         "VIRTUAL_FENCE_INTRUSION",
@@ -263,7 +397,10 @@ class VideoPipeline:
 
                 if class_name == "person":
                     loitering = self.loiter_detector.update(
-                        track_id, detection["centroid"], timestamp
+                        track_id,
+                        detection["centroid"],
+                        timestamp,
+                        in_scope=point_in_polygon(detection["centroid"], config.LOITERING_ZONE),
                     )
                     if loitering.started and self.alert_logger.log(
                         "SUSPICIOUS_LOITERING",
@@ -282,6 +419,51 @@ class VideoPipeline:
                     source_time=timestamp,
                 ):
                     self._remember_alert(f"NIGHT MOVEMENT: {class_name} #{track_id}")
+
+                if self.risk_scorer is not None:
+                    motion_score = 0.0
+                    if class_name == "person" and self.motion_analyzer is not None:
+                        motion_score = self.motion_analyzer.analyze(
+                            self.loiter_detector.history(track_id), timestamp
+                        ).score
+                    fence_distance = point_to_segment_distance(
+                        detection["centroid"], *config.VIRTUAL_FENCE_LINE
+                    )
+                    fence_proximity = max(
+                        0.0, 1.0 - fence_distance / config.RISK_FENCE_PROXIMITY_PX
+                    )
+                    assessment = self.risk_scorer.update(
+                        track_id,
+                        RiskSignals(
+                            fence_contact=float(self.fence.is_touching(track_id)),
+                            fence_proximity=fence_proximity,
+                            loitering=float(loitering.active),
+                            motion_signature=motion_score,
+                            low_posture=posture_signals.get(track_id, 0.0),
+                            night=float(is_night),
+                            fence_approach=(
+                                self.group_detector.approach_score(track_id)
+                                if self.group_detector
+                                else 0.0
+                            ),
+                            group_membership=float(
+                                self.group_detector is not None
+                                and track_id in self.group_detector.grouped_track_ids
+                            ),
+                            firearm=self._firearm_signals.get(track_id, 0.0),
+                        ),
+                        timestamp,
+                    )
+                    if assessment.crossed and self.alert_logger.log(
+                        "CONTEXTUAL_RISK",
+                        track_id,
+                        assessment.details(),
+                        self.frame_number,
+                        source_time=timestamp,
+                    ):
+                        self._remember_alert(
+                            f"CONTEXTUAL RISK: {class_name} #{track_id} {assessment.score:.2f}"
+                        )
 
             plate_text, plate_bbox = None, None
             if (
@@ -327,6 +509,10 @@ class VideoPipeline:
 
         self.fence.expire(timestamp)
         self.loiter_detector.expire(timestamp)
+        if self.group_detector is not None:
+            self.group_detector.expire(timestamp)
+        if self.risk_scorer is not None:
+            self.risk_scorer.expire(timestamp)
         for expired_track_id in self.anpr_consensus.expire(timestamp):
             self._stable_plates.pop(expired_track_id, None)
         now = time.monotonic()
@@ -351,9 +537,19 @@ class VideoPipeline:
                     "consensus_tracks": self.anpr_consensus.tracked_count,
                     "stable_reads": self._anpr_stable_reads,
                 },
+                "group_approach_tracks": (
+                    self.group_detector.tracked_count if self.group_detector else 0
+                ),
+                "contextual_risk_tracks": (
+                    self.risk_scorer.tracked_count if self.risk_scorer else 0
+                ),
+                "posture_status": self._posture_snapshot.get("status", "disabled"),
+                "firearm_status": self._detector_firearm_snapshot().get("status", "disabled"),
             }
         )
         if self.show_overlays:
+            for firearm_detection in firearm_detections:
+                draw_firearm(frame, firearm_detection)
             draw_fence(frame, config.VIRTUAL_FENCE_LINE)
             draw_status_bar(
                 frame,
@@ -363,6 +559,90 @@ class VideoPipeline:
                 fps,
             )
         return frame
+
+    def _update_posture_snapshot(self, snapshot: dict) -> None:
+        with self._posture_lock:
+            self._posture_snapshot = dict(snapshot)
+
+    def _current_posture_signals(self) -> dict[int, float]:
+        with self._posture_lock:
+            snapshot_frame = self._posture_snapshot.get("frame_number")
+            signals = list(self._posture_snapshot.get("signals", ()))
+        if (
+            not isinstance(snapshot_frame, int)
+            or self.frame_number - snapshot_frame > config.POSTURE_RESULT_MAX_AGE_FRAMES
+        ):
+            return {}
+        return {
+            int(signal["track_id"]): float(signal.get("confidence", 0.0))
+            for signal in signals
+            if signal.get("sustained")
+        }
+
+    def _detector_firearm_snapshot(self) -> dict:
+        snapshot = getattr(self.detector, "firearm_snapshot", None)
+        return snapshot() if callable(snapshot) else {"status": "disabled", "detections": []}
+
+    def _consume_firearm_snapshot(self, detections: list[dict], timestamp: float) -> list[dict]:
+        snapshot = self._detector_firearm_snapshot()
+        snapshot_frame = snapshot.get("frame_number")
+        if (
+            not isinstance(snapshot_frame, int)
+            or snapshot_frame <= self._last_firearm_snapshot_frame
+        ):
+            if isinstance(snapshot_frame, int) and (
+                self.frame_number - snapshot_frame > config.FIREARM_RESULT_MAX_AGE_FRAMES
+            ):
+                self._firearm_signals.clear()
+                self._firearm_detections = []
+            return list(self._firearm_detections)
+        self._last_firearm_snapshot_frame = snapshot_frame
+        if self.frame_number - snapshot_frame > config.FIREARM_RESULT_MAX_AGE_FRAMES:
+            self._firearm_signals.clear()
+            self._firearm_detections = []
+            return []
+
+        people = [
+            detection
+            for detection in detections
+            if detection["class_name"] == "person" and detection["track_id"] is not None
+        ]
+        associated = set()
+        current_signals = {}
+        firearm_detections = list(snapshot.get("detections", ()))
+        for firearm in firearm_detections:
+            left, top, right, bottom = firearm["bbox"]
+            center = ((left + right) / 2, (top + bottom) / 2)
+            containing = [
+                (
+                    max(
+                        1,
+                        (person["bbox"][2] - person["bbox"][0])
+                        * (person["bbox"][3] - person["bbox"][1]),
+                    ),
+                    person["track_id"],
+                )
+                for person in people
+                if person["bbox"][0] <= center[0] <= person["bbox"][2]
+                and person["bbox"][1] <= center[1] <= person["bbox"][3]
+            ]
+            track_id = min(containing)[1] if containing else 0
+            associated.add(track_id)
+            confidence = float(firearm["confidence"])
+            current_signals[track_id] = max(confidence, current_signals.get(track_id, 0.0))
+            if track_id not in self._firearm_alerted_tracks and self.alert_logger.log(
+                "FIREARM_DETECTED",
+                track_id,
+                f"confidence={confidence:.2f}; flag for human review only",
+                self.frame_number,
+                source_time=timestamp,
+            ):
+                self._remember_alert(f"FIREARM REVIEW: track #{track_id}")
+        self._firearm_alerted_tracks.intersection_update(associated)
+        self._firearm_alerted_tracks.update(associated)
+        self._firearm_signals = current_signals
+        self._firearm_detections = firearm_detections
+        return list(self._firearm_detections)
 
     def _validate_fence(self, frame) -> None:
         height, width = frame.shape[:2]
@@ -424,10 +704,20 @@ class VideoPipeline:
         self.detector.reset_tracking()
         if self.face_enhancer is not None:
             self.face_enhancer.reset()
+        if self.posture_service is not None:
+            self.posture_service.reset()
         self.fence.reset()
         self.loiter_detector.reset()
+        if self.group_detector is not None:
+            self.group_detector.reset()
+        if self.risk_scorer is not None:
+            self.risk_scorer.reset()
         self.anpr_consensus.reset()
         self._stable_plates.clear()
+        self._last_firearm_snapshot_frame = -1
+        self._firearm_alerted_tracks.clear()
+        self._firearm_signals.clear()
+        self._firearm_detections = []
         self.alert_logger.reset_cooldowns()
         self._recent_alerts.clear()
         self._fps_samples.clear()
@@ -439,4 +729,9 @@ class VideoPipeline:
     def close(self) -> None:
         if self.face_enhancer is not None:
             self.face_enhancer.close()
+        if self.posture_service is not None:
+            self.posture_service.close()
+        close_detector = getattr(self.detector, "close", None)
+        if callable(close_detector):
+            close_detector()
         self.alert_logger.close()

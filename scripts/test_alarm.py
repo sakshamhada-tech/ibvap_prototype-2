@@ -12,6 +12,9 @@ from alarms import SUPPORTED_ALARM_EVENTS, AlarmPlayer
 ALIASES = {
     "intrusion": "VIRTUAL_FENCE_INTRUSION",
     "loitering": "SUSPICIOUS_LOITERING",
+    "group": "GROUP_APPROACH",
+    "firearm": "FIREARM_DETECTED",
+    "risk": "CONTEXTUAL_RISK",
     "night": "NIGHT_MOVEMENT",
     "anpr": "ANPR_READ",
 }

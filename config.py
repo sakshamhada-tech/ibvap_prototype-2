@@ -75,6 +75,32 @@ def _parse_fence(raw: str) -> tuple[tuple[int, int], tuple[int, int]]:
     return (x1, y1), (x2, y2)
 
 
+def _parse_optional_polygon(raw: str) -> tuple[tuple[int, int], ...] | None:
+    """Parse ``x,y;x,y;...`` or the explicit whole-frame value ``anywhere``."""
+    if raw.strip().lower() == "anywhere":
+        return None
+    try:
+        points = tuple(
+            tuple(int(value.strip()) for value in pair.split(",")) for pair in raw.split(";")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("IBVAP_LOITERING_ZONE must be 'anywhere' or x,y;x,y;x,y") from exc
+    if len(points) < 3 or any(len(point) != 2 for point in points):
+        raise ValueError("IBVAP_LOITERING_ZONE polygon must contain at least three x,y points")
+    if len(set(points)) < 3:
+        raise ValueError("IBVAP_LOITERING_ZONE polygon must contain three distinct points")
+    return points
+
+
+def _validate_sha256(name: str, value: str, *, required: bool = False) -> str:
+    normalized = value.strip().lower()
+    if required and not normalized:
+        raise ValueError(f"{name} must be configured when its feature is enabled")
+    if normalized and not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise ValueError(f"{name} must be a 64-character hexadecimal digest")
+    return normalized
+
+
 # Input and model
 VIDEO_SOURCE = _parse_video_source(os.getenv("IBVAP_VIDEO_SOURCE", "0"))
 _model_setting = os.getenv("IBVAP_YOLO_MODEL", "yolov8n.pt")
@@ -93,6 +119,15 @@ if YOLO_MODEL_SHA256 and not re.fullmatch(r"[0-9a-f]{64}", YOLO_MODEL_SHA256):
 CONFIDENCE_THRESHOLD = _env_float("IBVAP_CONFIDENCE_THRESHOLD", 0.4, minimum=0.0)
 if CONFIDENCE_THRESHOLD > 1.0:
     raise ValueError("IBVAP_CONFIDENCE_THRESHOLD must be <= 1")
+ENABLE_TILED_INFERENCE = _env_bool("IBVAP_ENABLE_TILED_INFERENCE", False)
+TILE_SIZE = _env_int("IBVAP_TILE_SIZE", 640, minimum=128)
+TILE_OVERLAP = _env_float("IBVAP_TILE_OVERLAP", 0.20, minimum=0.0)
+if TILE_OVERLAP >= 0.9:
+    raise ValueError("IBVAP_TILE_OVERLAP must be < 0.9")
+TILED_INFERENCE_INTERVAL_FRAMES = _env_int("IBVAP_TILED_INFERENCE_INTERVAL_FRAMES", 30, minimum=1)
+TILED_INFERENCE_NMS_IOU = _env_float("IBVAP_TILED_INFERENCE_NMS_IOU", 0.5, minimum=0.0)
+if TILED_INFERENCE_NMS_IOU > 1.0:
+    raise ValueError("IBVAP_TILED_INFERENCE_NMS_IOU must be <= 1")
 PERSON_CLASS_ID = 0
 VEHICLE_CLASS_IDS = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
@@ -105,6 +140,7 @@ LOITERING_SECONDS = _env_float("IBVAP_LOITERING_SECONDS", 15.0, minimum=0.1)
 LOITERING_MOVEMENT_THRESHOLD_PX = _env_float(
     "IBVAP_LOITERING_MOVEMENT_THRESHOLD_PX", 60.0, minimum=1.0
 )
+LOITERING_ZONE = _parse_optional_polygon(os.getenv("IBVAP_LOITERING_ZONE", "anywhere"))
 TRACK_STALE_SECONDS = _env_float("IBVAP_TRACK_STALE_SECONDS", 3.0, minimum=0.1)
 TRACK_MAX_OBSERVATION_GAP_SECONDS = _env_float(
     "IBVAP_TRACK_MAX_OBSERVATION_GAP_SECONDS", 1.5, minimum=0.01
@@ -121,6 +157,92 @@ if NIGHT_BRIGHTNESS_SMOOTHING_ALPHA > 1.0:
 NIGHT_BRIGHTNESS_ROI_MARGIN = _env_float("IBVAP_NIGHT_BRIGHTNESS_ROI_MARGIN", 0.05, minimum=0.0)
 if NIGHT_BRIGHTNESS_ROI_MARGIN >= 0.5:
     raise ValueError("IBVAP_NIGHT_BRIGHTNESS_ROI_MARGIN must be < 0.5")
+
+# Classical-CV context signals are opt-in and retain only short-lived track state.
+ENABLE_GROUP_APPROACH = _env_bool("IBVAP_ENABLE_GROUP_APPROACH", False)
+GROUP_MIN_SIZE = _env_int("IBVAP_GROUP_MIN_SIZE", 3, minimum=2)
+GROUP_PROXIMITY_PX = _env_float("IBVAP_GROUP_PROXIMITY_PX", 160.0, minimum=1.0)
+GROUP_APPROACH_WINDOW_SECONDS = _env_float("IBVAP_GROUP_APPROACH_WINDOW_SECONDS", 3.0, minimum=0.1)
+GROUP_MIN_SPEED_PX_PER_SECOND = _env_float("IBVAP_GROUP_MIN_SPEED_PX_PER_SECOND", 5.0, minimum=0.0)
+GROUP_HEADING_SIMILARITY = _env_float("IBVAP_GROUP_HEADING_SIMILARITY", 0.75, minimum=0.0)
+if GROUP_HEADING_SIMILARITY > 1.0:
+    raise ValueError("IBVAP_GROUP_HEADING_SIMILARITY must be <= 1")
+GROUP_MIN_FENCE_PROGRESS_PX = _env_float("IBVAP_GROUP_MIN_FENCE_PROGRESS_PX", 12.0, minimum=0.0)
+
+ENABLE_MOTION_SIGNATURE = _env_bool("IBVAP_ENABLE_MOTION_SIGNATURE", False)
+MOTION_SIGNATURE_WINDOW_SECONDS = _env_float(
+    "IBVAP_MOTION_SIGNATURE_WINDOW_SECONDS", 3.0, minimum=0.1
+)
+if ENABLE_MOTION_SIGNATURE and MOTION_SIGNATURE_WINDOW_SECONDS > LOITERING_SECONDS:
+    raise ValueError(
+        "IBVAP_MOTION_SIGNATURE_WINDOW_SECONDS must not exceed IBVAP_LOITERING_SECONDS "
+        "because motion scoring reuses loitering trajectory history"
+    )
+MOTION_SIGNATURE_MIN_SAMPLES = _env_int("IBVAP_MOTION_SIGNATURE_MIN_SAMPLES", 8, minimum=3)
+MOTION_SIGNATURE_STATIC_PATH_PX = _env_float(
+    "IBVAP_MOTION_SIGNATURE_STATIC_PATH_PX", 3.0, minimum=0.0
+)
+MOTION_SIGNATURE_VEGETATION_MAX_NET_PX = _env_float(
+    "IBVAP_MOTION_SIGNATURE_VEGETATION_MAX_NET_PX", 8.0, minimum=0.0
+)
+MOTION_SIGNATURE_HIGH_FREQUENCY_RATIO = _env_float(
+    "IBVAP_MOTION_SIGNATURE_HIGH_FREQUENCY_RATIO", 0.5, minimum=0.0
+)
+if MOTION_SIGNATURE_HIGH_FREQUENCY_RATIO > 1.0:
+    raise ValueError("IBVAP_MOTION_SIGNATURE_HIGH_FREQUENCY_RATIO must be <= 1")
+MOTION_SIGNATURE_DISPLACEMENT_SCALE_PX = _env_float(
+    "IBVAP_MOTION_SIGNATURE_DISPLACEMENT_SCALE_PX", 40.0, minimum=0.1
+)
+MOTION_SIGNATURE_OSCILLATION_SCALE_PX = _env_float(
+    "IBVAP_MOTION_SIGNATURE_OSCILLATION_SCALE_PX", 4.0, minimum=0.1
+)
+MOTION_SIGNATURE_STATIC_SCORE = _env_float("IBVAP_MOTION_SIGNATURE_STATIC_SCORE", 0.0, minimum=0.0)
+MOTION_SIGNATURE_VEGETATION_SCORE = _env_float(
+    "IBVAP_MOTION_SIGNATURE_VEGETATION_SCORE", 0.05, minimum=0.0
+)
+MOTION_SIGNATURE_GAIT_SCORE = _env_float("IBVAP_MOTION_SIGNATURE_GAIT_SCORE", 0.8, minimum=0.0)
+MOTION_SIGNATURE_RIGID_SCORE = _env_float("IBVAP_MOTION_SIGNATURE_RIGID_SCORE", 0.4, minimum=0.0)
+MOTION_SIGNATURE_AMBIGUOUS_SCORE = _env_float(
+    "IBVAP_MOTION_SIGNATURE_AMBIGUOUS_SCORE", 0.2, minimum=0.0
+)
+for _motion_score_name, _motion_score in (
+    ("IBVAP_MOTION_SIGNATURE_STATIC_SCORE", MOTION_SIGNATURE_STATIC_SCORE),
+    ("IBVAP_MOTION_SIGNATURE_VEGETATION_SCORE", MOTION_SIGNATURE_VEGETATION_SCORE),
+    ("IBVAP_MOTION_SIGNATURE_GAIT_SCORE", MOTION_SIGNATURE_GAIT_SCORE),
+    ("IBVAP_MOTION_SIGNATURE_RIGID_SCORE", MOTION_SIGNATURE_RIGID_SCORE),
+    ("IBVAP_MOTION_SIGNATURE_AMBIGUOUS_SCORE", MOTION_SIGNATURE_AMBIGUOUS_SCORE),
+):
+    if _motion_score > 1.0:
+        raise ValueError(f"{_motion_score_name} must be <= 1")
+
+ENABLE_CONTEXTUAL_RISK = _env_bool("IBVAP_ENABLE_CONTEXTUAL_RISK", False)
+RISK_ALERT_THRESHOLD = _env_float("IBVAP_RISK_ALERT_THRESHOLD", 0.65, minimum=0.0)
+if RISK_ALERT_THRESHOLD > 1.0:
+    raise ValueError("IBVAP_RISK_ALERT_THRESHOLD must be <= 1")
+RISK_FENCE_PROXIMITY_PX = _env_float("IBVAP_RISK_FENCE_PROXIMITY_PX", 180.0, minimum=1.0)
+RISK_WEIGHT_FENCE_CONTACT = _env_float("IBVAP_RISK_WEIGHT_FENCE_CONTACT", 0.35, minimum=0.0)
+RISK_WEIGHT_FENCE_PROXIMITY = _env_float("IBVAP_RISK_WEIGHT_FENCE_PROXIMITY", 0.15, minimum=0.0)
+RISK_WEIGHT_LOITERING = _env_float("IBVAP_RISK_WEIGHT_LOITERING", 0.20, minimum=0.0)
+RISK_WEIGHT_MOTION_SIGNATURE = _env_float("IBVAP_RISK_WEIGHT_MOTION_SIGNATURE", 0.10, minimum=0.0)
+RISK_WEIGHT_LOW_POSTURE = _env_float("IBVAP_RISK_WEIGHT_LOW_POSTURE", 0.20, minimum=0.0)
+RISK_WEIGHT_NIGHT = _env_float("IBVAP_RISK_WEIGHT_NIGHT", 0.10, minimum=0.0)
+RISK_WEIGHT_FENCE_APPROACH = _env_float("IBVAP_RISK_WEIGHT_FENCE_APPROACH", 0.20, minimum=0.0)
+RISK_WEIGHT_GROUP_MEMBERSHIP = _env_float("IBVAP_RISK_WEIGHT_GROUP_MEMBERSHIP", 0.20, minimum=0.0)
+RISK_WEIGHT_FIREARM = _env_float("IBVAP_RISK_WEIGHT_FIREARM", 0.50, minimum=0.0)
+for _risk_weight_name, _risk_weight in (
+    ("IBVAP_RISK_WEIGHT_FENCE_CONTACT", RISK_WEIGHT_FENCE_CONTACT),
+    ("IBVAP_RISK_WEIGHT_FENCE_PROXIMITY", RISK_WEIGHT_FENCE_PROXIMITY),
+    ("IBVAP_RISK_WEIGHT_LOITERING", RISK_WEIGHT_LOITERING),
+    ("IBVAP_RISK_WEIGHT_MOTION_SIGNATURE", RISK_WEIGHT_MOTION_SIGNATURE),
+    ("IBVAP_RISK_WEIGHT_LOW_POSTURE", RISK_WEIGHT_LOW_POSTURE),
+    ("IBVAP_RISK_WEIGHT_NIGHT", RISK_WEIGHT_NIGHT),
+    ("IBVAP_RISK_WEIGHT_FENCE_APPROACH", RISK_WEIGHT_FENCE_APPROACH),
+    ("IBVAP_RISK_WEIGHT_GROUP_MEMBERSHIP", RISK_WEIGHT_GROUP_MEMBERSHIP),
+    ("IBVAP_RISK_WEIGHT_FIREARM", RISK_WEIGHT_FIREARM),
+):
+    if _risk_weight > 1.0:
+        raise ValueError(f"{_risk_weight_name} must be <= 1")
+
 # SCRFD source-face review is opt-in because it requires separately licensed
 # model weights. It never modifies the primary video frame.
 ENABLE_FACE_ENHANCEMENT = _env_bool("IBVAP_ENABLE_FACE_ENHANCEMENT", False)
@@ -163,6 +285,55 @@ if not re.fullmatch(r"[0-9a-f]{64}", GFPGAN_MODEL_SHA256):
 FACE_ENHANCEMENT_DEVICE = os.getenv("IBVAP_FACE_ENHANCEMENT_DEVICE", "auto").strip().lower()
 if FACE_ENHANCEMENT_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
     raise ValueError("IBVAP_FACE_ENHANCEMENT_DEVICE must be auto, cpu, mps, or cuda")
+
+# Pose analysis is isolated and disabled until an operator provides reviewed weights.
+ENABLE_POSTURE_ANALYSIS = _env_bool("IBVAP_ENABLE_POSTURE_ANALYSIS", False)
+POSTURE_MODEL_PATH = _resolve_path(os.getenv("IBVAP_POSTURE_MODEL_PATH", "models/yolov8n-pose.pt"))
+POSTURE_MODEL_SHA256 = _validate_sha256(
+    "IBVAP_POSTURE_MODEL_SHA256", os.getenv("IBVAP_POSTURE_MODEL_SHA256", "")
+)
+POSTURE_CONFIDENCE_THRESHOLD = _env_float("IBVAP_POSTURE_CONFIDENCE_THRESHOLD", 0.60, minimum=0.0)
+if POSTURE_CONFIDENCE_THRESHOLD > 1.0:
+    raise ValueError("IBVAP_POSTURE_CONFIDENCE_THRESHOLD must be <= 1")
+POSTURE_INTERVAL_FRAMES = _env_int("IBVAP_POSTURE_INTERVAL_FRAMES", 15, minimum=1)
+POSTURE_MAX_PEOPLE = _env_int("IBVAP_POSTURE_MAX_PEOPLE", 4, minimum=1)
+POSTURE_MIN_PERSON_SIZE_PX = _env_int("IBVAP_POSTURE_MIN_PERSON_SIZE_PX", 96, minimum=1)
+POSTURE_LOW_ASPECT_RATIO = _env_float("IBVAP_POSTURE_LOW_ASPECT_RATIO", 0.9, minimum=0.1)
+POSTURE_MAX_VERTICAL_SPREAD_RATIO = _env_float(
+    "IBVAP_POSTURE_MAX_VERTICAL_SPREAD_RATIO", 0.55, minimum=0.0
+)
+if POSTURE_MAX_VERTICAL_SPREAD_RATIO > 1.0:
+    raise ValueError("IBVAP_POSTURE_MAX_VERTICAL_SPREAD_RATIO must be <= 1")
+POSTURE_MIN_VISIBLE_KEYPOINTS = _env_int("IBVAP_POSTURE_MIN_VISIBLE_KEYPOINTS", 3, minimum=1)
+POSTURE_MIN_KEYPOINT_CONFIDENCE = _env_float(
+    "IBVAP_POSTURE_MIN_KEYPOINT_CONFIDENCE", 0.40, minimum=0.0
+)
+if POSTURE_MIN_KEYPOINT_CONFIDENCE > 1.0:
+    raise ValueError("IBVAP_POSTURE_MIN_KEYPOINT_CONFIDENCE must be <= 1")
+POSTURE_SUSTAIN_SECONDS = _env_float("IBVAP_POSTURE_SUSTAIN_SECONDS", 1.5, minimum=0.1)
+POSTURE_STATE_TTL_SECONDS = _env_float("IBVAP_POSTURE_STATE_TTL_SECONDS", 3.0, minimum=0.1)
+POSTURE_RESULT_MAX_AGE_FRAMES = _env_int("IBVAP_POSTURE_RESULT_MAX_AGE_FRAMES", 45, minimum=1)
+POSTURE_DEVICE = os.getenv("IBVAP_POSTURE_DEVICE", "auto").strip().lower()
+if POSTURE_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
+    raise ValueError("IBVAP_POSTURE_DEVICE must be auto, cpu, mps, or cuda")
+
+# Firearm detections are conservative human-review flags from separate weights.
+ENABLE_FIREARM_DETECTION = _env_bool("IBVAP_ENABLE_FIREARM_DETECTION", False)
+FIREARM_MODEL_PATH = _resolve_path(
+    os.getenv("IBVAP_FIREARM_MODEL_PATH", "models/firearm_detector.pt")
+)
+FIREARM_MODEL_SHA256 = _validate_sha256(
+    "IBVAP_FIREARM_MODEL_SHA256", os.getenv("IBVAP_FIREARM_MODEL_SHA256", "")
+)
+FIREARM_CONFIDENCE_THRESHOLD = _env_float("IBVAP_FIREARM_CONFIDENCE_THRESHOLD", 0.80, minimum=0.0)
+if FIREARM_CONFIDENCE_THRESHOLD > 1.0:
+    raise ValueError("IBVAP_FIREARM_CONFIDENCE_THRESHOLD must be <= 1")
+FIREARM_INTERVAL_FRAMES = _env_int("IBVAP_FIREARM_INTERVAL_FRAMES", 15, minimum=1)
+FIREARM_RESULT_MAX_AGE_FRAMES = _env_int("IBVAP_FIREARM_RESULT_MAX_AGE_FRAMES", 45, minimum=1)
+FIREARM_DEVICE = os.getenv("IBVAP_FIREARM_DEVICE", "auto").strip().lower()
+if FIREARM_DEVICE not in {"auto", "cpu", "mps", "cuda"}:
+    raise ValueError("IBVAP_FIREARM_DEVICE must be auto, cpu, mps, or cuda")
+
 # ANPR is opt-in: it requires separately reviewed Indian plate-detector weights
 # plus EasyOCR and its separately governed recognition weights.
 ENABLE_ANPR = _env_bool("IBVAP_ENABLE_ANPR", False)
@@ -248,6 +419,9 @@ AUDIBLE_ALARM_EVENTS = tuple(
 _known_alarm_events = {
     "VIRTUAL_FENCE_INTRUSION",
     "SUSPICIOUS_LOITERING",
+    "GROUP_APPROACH",
+    "FIREARM_DETECTED",
+    "CONTEXTUAL_RISK",
     "NIGHT_MOVEMENT",
     "ANPR_READ",
 }

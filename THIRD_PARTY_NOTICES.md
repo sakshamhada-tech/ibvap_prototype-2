@@ -52,6 +52,16 @@ Their reviewed download locations and checksums are recorded in
 - GFPGAN output is generative. It can invent plausible details and must not be
   represented as an authentic or forensically reliable reconstruction.
 
+## Operator-supplied pose and firearm checkpoints
+
+The optional posture and firearm workers do not include or download model
+weights. Any operator-supplied Ultralytics-compatible checkpoint retains its
+own code, dataset, and weight terms. Before use, document its source and
+SHA-256, verify redistribution and deployment rights, assess training-data
+provenance and bias, and validate false-positive/false-negative behavior on
+representative labelled footage. Firearm results are human-review flags only.
+See `models/CONTEXT_MODEL_REQUIREMENTS.json`.
+
 ## Runtime dependencies
 
 The principal dependencies are Ultralytics, OpenCV, NumPy, FastAPI, Uvicorn,

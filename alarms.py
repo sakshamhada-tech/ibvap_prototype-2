@@ -23,15 +23,21 @@ Playback = Callable[[Path, float], None]
 
 SUPPORTED_ALARM_EVENTS = (
     "VIRTUAL_FENCE_INTRUSION",
+    "FIREARM_DETECTED",
+    "CONTEXTUAL_RISK",
+    "GROUP_APPROACH",
     "SUSPICIOUS_LOITERING",
     "NIGHT_MOVEMENT",
     "ANPR_READ",
 )
 _PRIORITIES = {
     "VIRTUAL_FENCE_INTRUSION": 0,
-    "SUSPICIOUS_LOITERING": 1,
-    "NIGHT_MOVEMENT": 2,
-    "ANPR_READ": 3,
+    "FIREARM_DETECTED": 0,
+    "CONTEXTUAL_RISK": 1,
+    "GROUP_APPROACH": 1,
+    "SUSPICIOUS_LOITERING": 2,
+    "NIGHT_MOVEMENT": 3,
+    "ANPR_READ": 4,
 }
 # (frequency_hz, duration_seconds). A zero frequency is silence. Patterns are
 # intentionally short and non-verbal to reduce masking and operator fatigue.
@@ -48,6 +54,29 @@ _PATTERNS = {
         (1050, 0.16),
         (0, 0.05),
         (720, 0.16),
+    ),
+    "FIREARM_DETECTED": (
+        (1180, 0.12),
+        (0, 0.06),
+        (1180, 0.12),
+        (0, 0.06),
+        (880, 0.24),
+    ),
+    "CONTEXTUAL_RISK": (
+        (740, 0.14),
+        (0, 0.07),
+        (900, 0.14),
+        (0, 0.07),
+        (1060, 0.20),
+    ),
+    "GROUP_APPROACH": (
+        (520, 0.16),
+        (0, 0.08),
+        (620, 0.16),
+        (0, 0.08),
+        (720, 0.16),
+        (0, 0.08),
+        (820, 0.20),
     ),
     "SUSPICIOUS_LOITERING": (
         (600, 0.24),

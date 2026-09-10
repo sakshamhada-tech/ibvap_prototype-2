@@ -57,3 +57,13 @@ def test_disabled_alarm_player_never_queues_audio():
     assert not player.notify({"alert_type": "VIRTUAL_FENCE_INTRUSION"})
     assert player.snapshot()["alarm_status"] == "disabled"
     player.close()
+
+
+def test_context_event_patterns_are_supported_and_distinct(tmp_path):
+    import alarms
+
+    context_events = ("GROUP_APPROACH", "FIREARM_DETECTED", "CONTEXTUAL_RISK")
+    assert set(context_events).issubset(alarms.SUPPORTED_ALARM_EVENTS)
+    sounds = alarms._create_alarm_files(tmp_path, context_events)
+    payloads = [sounds[event].read_bytes() for event in context_events]
+    assert len(set(payloads)) == len(context_events)

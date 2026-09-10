@@ -276,3 +276,126 @@ def test_anpr_diagnostics_distinguish_region_confidence_and_empty_ocr(monkeypatc
     assert metrics["region_rejected"] == 1
     assert metrics["ocr_low_confidence"] == 1
     assert metrics["last_result"] == "ocr_low_confidence"
+
+
+def test_loitering_is_wide_area_and_not_fence_gated(monkeypatch, tmp_path):
+    configure_pipeline(monkeypatch, tmp_path)
+    alerts = []
+    video_pipeline = pipeline.VideoPipeline(on_alert=alerts.append, show_overlays=False)
+    frame = FakeFrame()
+
+    for timestamp in (0, 1, 2, 3):
+        video_pipeline.process_frame(frame, source_time=timestamp)
+
+    alert_types = [alert["alert_type"] for alert in alerts]
+    assert "SUSPICIOUS_LOITERING" in alert_types
+    assert "VIRTUAL_FENCE_INTRUSION" not in alert_types
+    video_pipeline.close()
+
+
+class FakeGroupDetector(FakeDetector):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def track_frame(self, _frame):
+        top = self.calls * 15
+        self.calls += 1
+        return [
+            {
+                "track_id": track_id,
+                "class_id": 0,
+                "class_name": "person",
+                "bbox": (left, top, left + 10, top + 10),
+                "centroid": (left + 5, top + 5),
+                "conf": 0.9,
+            }
+            for track_id, left in ((1, 10), (2, 25), (3, 40))
+        ]
+
+
+class FakeFirearmDetector(FakeDetector):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def track_frame(self, _frame):
+        self.calls += 1
+        return [
+            {
+                "track_id": 9,
+                "class_id": 0,
+                "class_name": "person",
+                "bbox": (0, 0, 30, 40),
+                "centroid": (15, 20),
+                "conf": 0.9,
+            }
+        ]
+
+    def firearm_snapshot(self):
+        return {
+            "status": "ready",
+            "frame_number": self.calls,
+            "detections": [{"bbox": (10, 10, 20, 20), "confidence": 0.91}],
+        }
+
+
+def test_pipeline_emits_group_approach_once(monkeypatch, tmp_path):
+    configure_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline, "Detector", FakeGroupDetector)
+    monkeypatch.setattr(config, "ENABLE_GROUP_APPROACH", True)
+    monkeypatch.setattr(config, "GROUP_MIN_SIZE", 3)
+    monkeypatch.setattr(config, "GROUP_PROXIMITY_PX", 50)
+    monkeypatch.setattr(config, "GROUP_APPROACH_WINDOW_SECONDS", 3)
+    monkeypatch.setattr(config, "GROUP_MIN_SPEED_PX_PER_SECOND", 2)
+    monkeypatch.setattr(config, "GROUP_HEADING_SIMILARITY", 0.8)
+    monkeypatch.setattr(config, "GROUP_MIN_FENCE_PROGRESS_PX", 5)
+    alerts = []
+    video_pipeline = pipeline.VideoPipeline(on_alert=alerts.append, show_overlays=False)
+
+    for timestamp in (0, 1, 2):
+        video_pipeline.process_frame(FakeFrame(), source_time=timestamp)
+
+    group_alerts = [alert for alert in alerts if alert["alert_type"] == "GROUP_APPROACH"]
+    assert len(group_alerts) == 1
+    assert "tracks 1,2,3" in group_alerts[0]["details"]
+    video_pipeline.close()
+
+
+def test_pipeline_emits_conservative_firearm_review_once(monkeypatch, tmp_path):
+    configure_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline, "Detector", FakeFirearmDetector)
+    alerts = []
+    video_pipeline = pipeline.VideoPipeline(on_alert=alerts.append, show_overlays=False)
+
+    video_pipeline.process_frame(FakeFrame(), source_time=0)
+    video_pipeline.process_frame(FakeFrame(), source_time=1)
+
+    firearm_alerts = [alert for alert in alerts if alert["alert_type"] == "FIREARM_DETECTED"]
+    assert len(firearm_alerts) == 1
+    assert "human review only" in firearm_alerts[0]["details"]
+    video_pipeline.close()
+
+
+def test_pipeline_contextual_risk_includes_explainable_signals(monkeypatch, tmp_path):
+    configure_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline, "Detector", FakeGroupDetector)
+    monkeypatch.setattr(config, "ENABLE_CONTEXTUAL_RISK", True)
+    monkeypatch.setattr(config, "RISK_ALERT_THRESHOLD", 0.3)
+    monkeypatch.setattr(config, "GROUP_MIN_SIZE", 3)
+    monkeypatch.setattr(config, "GROUP_PROXIMITY_PX", 50)
+    monkeypatch.setattr(config, "GROUP_APPROACH_WINDOW_SECONDS", 3)
+    monkeypatch.setattr(config, "GROUP_MIN_SPEED_PX_PER_SECOND", 2)
+    monkeypatch.setattr(config, "GROUP_HEADING_SIMILARITY", 0.8)
+    monkeypatch.setattr(config, "GROUP_MIN_FENCE_PROGRESS_PX", 5)
+    alerts = []
+    video_pipeline = pipeline.VideoPipeline(on_alert=alerts.append, show_overlays=False)
+
+    video_pipeline.process_frame(FakeFrame(), source_time=0)
+    video_pipeline.process_frame(FakeFrame(), source_time=1)
+
+    contextual = [alert for alert in alerts if alert["alert_type"] == "CONTEXTUAL_RISK"]
+    assert contextual
+    assert "signals:" in contextual[0]["details"]
+    assert "group_membership" in contextual[0]["details"]
+    video_pipeline.close()

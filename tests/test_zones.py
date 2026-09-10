@@ -3,6 +3,7 @@ import pytest
 from utils.zones import (
     LoiteringDetector,
     VirtualFence,
+    point_in_polygon,
     segment_intersects_box,
     segments_intersect,
 )
@@ -108,4 +109,18 @@ def test_loitering_state_expires():
     assert detector.tracked_count == 0
     detector.update(8, (0, 0), 5)
     detector.reset()
+    assert detector.tracked_count == 0
+
+
+def test_optional_polygon_scopes_loitering_without_fence_coupling():
+    polygon = ((0, 0), (100, 0), (100, 100), (0, 100))
+    assert point_in_polygon((50, 50), polygon)
+    assert not point_in_polygon((150, 50), polygon)
+    assert point_in_polygon((100, 50), polygon)
+
+    detector = LoiteringDetector(2, 5, max_observation_gap_seconds=1.1)
+    assert not detector.update(1, (50, 50), 0, in_scope=True).active
+    assert not detector.update(1, (50, 50), 1, in_scope=True).active
+    assert detector.update(1, (50, 50), 2, in_scope=True).started
+    assert not detector.update(1, (150, 50), 3, in_scope=False).active
     assert detector.tracked_count == 0
