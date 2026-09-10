@@ -20,6 +20,7 @@ sample_data/*
 !logs/.gitkeep
 !output/.gitkeep
 !sample_data/.gitkeep
+evaluation/results/*
 
 # Optional face models are large and have separate upstream licenses.
 models/*.onnx

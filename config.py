@@ -205,6 +205,44 @@ NATIVE_FOCUS_DEVICE = os.getenv("IBVAP_NATIVE_FOCUS_DEVICE", "auto").strip().low
 if NATIVE_FOCUS_DEVICE not in {"auto", "cpu", "mps", "cuda", "cuda:0"}:
     raise ValueError("IBVAP_NATIVE_FOCUS_DEVICE must be auto, cpu, mps, cuda, or cuda:0")
 
+# Controlled evaluation bounds and scoring. These are dataset/reporting settings,
+# not claims about operational range or universal model performance.
+EVALUATION_IOU_THRESHOLD = _env_float("IBVAP_EVALUATION_IOU_THRESHOLD", 0.50, minimum=0.0)
+if EVALUATION_IOU_THRESHOLD > 1.0:
+    raise ValueError("IBVAP_EVALUATION_IOU_THRESHOLD must be <= 1")
+EVALUATION_LOW_FPS_PERCENTILE = _env_float("IBVAP_EVALUATION_LOW_FPS_PERCENTILE", 10.0, minimum=0.1)
+if EVALUATION_LOW_FPS_PERCENTILE > 50.0:
+    raise ValueError("IBVAP_EVALUATION_LOW_FPS_PERCENTILE must be <= 50")
+EVALUATION_MAX_FRAMES = _env_int("IBVAP_EVALUATION_MAX_FRAMES", 10_000, minimum=1)
+if EVALUATION_MAX_FRAMES > 1_000_000:
+    raise ValueError("IBVAP_EVALUATION_MAX_FRAMES must be <= 1000000")
+EVALUATION_RUNTIME_WARMUP_FRAMES = _env_int("IBVAP_EVALUATION_RUNTIME_WARMUP_FRAMES", 5, minimum=0)
+if EVALUATION_RUNTIME_WARMUP_FRAMES >= EVALUATION_MAX_FRAMES:
+    raise ValueError("IBVAP_EVALUATION_RUNTIME_WARMUP_FRAMES must be less than max frames")
+EVALUATION_MAX_OBJECTS_PER_FRAME = _env_int(
+    "IBVAP_EVALUATION_MAX_OBJECTS_PER_FRAME", 1_000, minimum=1
+)
+if EVALUATION_MAX_OBJECTS_PER_FRAME > 10_000:
+    raise ValueError("IBVAP_EVALUATION_MAX_OBJECTS_PER_FRAME must be <= 10000")
+EVALUATION_MAX_ALERTS = _env_int("IBVAP_EVALUATION_MAX_ALERTS", 100_000, minimum=1)
+if EVALUATION_MAX_ALERTS > 1_000_000:
+    raise ValueError("IBVAP_EVALUATION_MAX_ALERTS must be <= 1000000")
+EVALUATION_MAX_JSON_BYTES = _env_int(
+    "IBVAP_EVALUATION_MAX_JSON_BYTES", 100 * 1024 * 1024, minimum=1024
+)
+if EVALUATION_MAX_JSON_BYTES > 1024 * 1024 * 1024:
+    raise ValueError("IBVAP_EVALUATION_MAX_JSON_BYTES must be <= 1073741824")
+EVALUATION_HARDWARE_LABEL = os.getenv("IBVAP_EVALUATION_HARDWARE_LABEL", "unrecorded").strip()
+EVALUATION_BUILD_LABEL = os.getenv("IBVAP_EVALUATION_BUILD_LABEL", "unrecorded").strip()
+for _evaluation_label_name, _evaluation_label in (
+    ("IBVAP_EVALUATION_HARDWARE_LABEL", EVALUATION_HARDWARE_LABEL),
+    ("IBVAP_EVALUATION_BUILD_LABEL", EVALUATION_BUILD_LABEL),
+):
+    if not _evaluation_label or len(_evaluation_label) > 128:
+        raise ValueError(f"{_evaluation_label_name} must contain 1..128 characters")
+    if any(not _character.isprintable() for _character in _evaluation_label):
+        raise ValueError(f"{_evaluation_label_name} must contain only printable characters")
+
 PERSON_CLASS_ID = 0
 VEHICLE_CLASS_IDS = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 

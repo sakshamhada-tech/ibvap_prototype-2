@@ -25,6 +25,7 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 | Motion signature | Heuristic centroid-oscillation score for composite risk only | Experimental, disabled |
 | Tiled small-object inference | Cadence-limited overlapping tiles plus cross-tile NMS | Optional, disabled |
 | Native digital focus | Source-pixel crop confirmation plus bounded tracker-acquisition boost | Experimental, disabled |
+| Controlled evaluation | Identical-frame wide/focus traces, pixel-band metrics, tracking/events/runtime report | Offline tool |
 | Low-posture review | Failure-isolated pose worker with size and persistence gates | Experimental, disabled |
 | Firearm review | No detector, alert, dashboard, or alarm path | Not implemented |
 | Contextual risk | Explainable config-weighted per-track signal composition | Experimental, disabled |
@@ -155,6 +156,29 @@ The feature is disabled by default because it owns a second model instance and
 can materially reduce throughput. A one-slot drop-on-busy queue, CPU/MPS/CUDA
 device selection, visible worker status, model checksum verification, and
 exception isolation keep it from blocking or stopping wide tracking.
+
+### Controlled baseline-versus-focus evaluation
+
+`scripts/evaluate_long_range.py` collects bounded, metadata-only traces for the
+same source in `wide-only` and `focus-enabled` configurations, then validates
+and compares them against human-authored source-coordinate annotations. The
+report separates all matching detector proposals from authoritative full-frame
+detections carrying ByteTrack IDs. It reports recall by person/vehicle category
+(and detailed class), daylight versus low-light, and the fixed `<=24 px`, `25-48 px`,
+`49-96 px`, and `>96 px` target
+height bands.
+
+The same report includes unmatched detections per minute for exhaustively
+labelled intervals, target acquisition, longest continuous track, ID switches,
+median/low-percentile/wall FPS, event-window precision and recall, event latency,
+and focus-minus-baseline deltas. One-way decoded-frame SHA-256 fingerprints enforce
+input parity while generated traces omit frame pixels, camera URLs, credentials, plate
+text, and free-form alert details. See
+[`evaluation/README.md`](evaluation/README.md) and its annotation template.
+These measurements describe only the labelled source and recorded settings;
+they do not establish field range, weather robustness, or universal accuracy.
+The repository currently publishes no representative-footage result because no
+consented labelled 1080p/4K evaluation set has been supplied here.
 
 ### Pose-based low-posture review
 
@@ -454,6 +478,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | ANPR | External regional YOLO checkpoint + OpenCV preprocessing + EasyOCR + tracked consensus | Disabled by default; separate dependency lock and weights |
 | Tiled detection | Separate Ultralytics predictor over overlapping tiles | Disabled; synchronous and FPS-expensive |
 | Native digital focus | Reviewed object model on source crops in a one-slot worker | Disabled; source evidence only, no synthetic track IDs |
+| Controlled evaluation | JSON annotations/traces plus deterministic Python scoring | No extra model or dependency |
 | Posture review | Operator-supplied Ultralytics pose checkpoint in a bounded worker | Disabled; uses core runtime plus external weights |
 | Context signals | Classical centroid geometry plus transparent weighted scoring | Disabled; unvalidated scene heuristics |
 | Audible alerts | Generated WAV + `afplay`/`winsound`/`paplay`/`aplay` | Plays on the server device, not the browser |
@@ -472,6 +497,7 @@ is vendored under `third_party/gfpgan_arch/`.
 | `python main.py` | Local window or headless batch/camera processing | No | Stops at EOF | Writes when enabled; writer failure stops startup |
 | `python server.py` | Authenticated dashboard and long-running capture | Yes | Loops at EOF | Writes independently of clients; failures are isolated |
 | `python scripts/diagnose_anpr.py` | Explain ANPR acceptance/abstention | No | Stops at frame bound/EOF | Optional explicit diagnostic output |
+| `python scripts/evaluate_long_range.py` | Collect/compare labelled wide and focus traces | No | Bounded by evaluation frame limit | Metadata-only JSON/Markdown |
 
 Do not run `main.py` and `server.py` against the same physical camera at the
 same time. Many camera backends permit only one owner. Audible-alarm playback is
@@ -694,6 +720,23 @@ parameters rather than validated universal values.
 
 Confidence, crop-size, IoU, result-age, JPEG, queue-poll, and shutdown controls
 are validated settings listed in `.env.example`.
+
+### Controlled evaluation
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `IBVAP_EVALUATION_IOU_THRESHOLD` | `0.50` | Ground-truth/prediction match threshold |
+| `IBVAP_EVALUATION_LOW_FPS_PERCENTILE` | `10` | Low processing-FPS percentile reported with median FPS |
+| `IBVAP_EVALUATION_MAX_FRAMES` | `10000` | Hard collection and input frame bound |
+| `IBVAP_EVALUATION_RUNTIME_WARMUP_FRAMES` | `5` | Initial processing samples excluded from FPS percentiles |
+| `IBVAP_EVALUATION_MAX_OBJECTS_PER_FRAME` | `1000` | Annotation/trace object-count bound |
+| `IBVAP_EVALUATION_MAX_ALERTS` | `100000` | Trace alert-count bound |
+| `IBVAP_EVALUATION_MAX_JSON_BYTES` | `104857600` | Input and generated JSON/report size bound |
+| `IBVAP_EVALUATION_HARDWARE_LABEL` | `unrecorded` | Non-sensitive hardware description required for a publishable run |
+| `IBVAP_EVALUATION_BUILD_LABEL` | `unrecorded` | Commit/release identifier required for a publishable run |
+
+The annotation schema, controlled two-run commands, event windows, metric
+interpretation, and safe reporting rules are in [`evaluation/README.md`](evaluation/README.md).
 
 ### Low-posture review
 
@@ -1274,6 +1317,9 @@ independent penetration test.
 - Digital focus cannot recover detail absent from the source sensor. ROI
   inference can preserve source pixels discarded by whole-frame resizing, but
   confirmation is not identity and contextual analytics still require ByteTrack.
+- Evaluation metrics are valid only for the exact labelled source, commit,
+  settings, and hardware in the trace. Event scoring uses labelled clip windows,
+  not identity association; sparse labels cannot support false detections/minute.
 - Low-posture geometry is not reliable for tiny, occluded, or distant people and
   cannot distinguish crawling from every fall, bend, or seated posture.
 - Firearm detection, related alerts, dashboard metadata, and alarm playback are

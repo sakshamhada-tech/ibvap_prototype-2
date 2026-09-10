@@ -124,9 +124,11 @@ class VideoPipeline:
         on_alert=None,
         on_face_snapshot=None,
         on_focus_snapshot=None,
+        on_evaluation_frame=None,
         show_overlays: bool = True,
     ):
         self.detector = Detector(on_focus_snapshot=on_focus_snapshot)
+        self._on_evaluation_frame = on_evaluation_frame
         self.face_enhancer = None
         if config.ENABLE_FACE_ENHANCEMENT and on_face_snapshot is not None:
             self.face_enhancer = FaceEnhancementService(
@@ -290,6 +292,7 @@ class VideoPipeline:
 
     def process_frame(self, frame, *, source_time: float | None = None):
         """Process one frame using media time (recording) or monotonic time (live)."""
+        processing_started = time.perf_counter()
         if frame is None or getattr(frame, "size", 0) == 0:
             raise ValueError("process_frame requires a non-empty image")
         timestamp = time.monotonic() if source_time is None else float(source_time)
@@ -578,7 +581,50 @@ class VideoPipeline:
                 self.frame_number,
                 fps,
             )
+        self._publish_evaluation_frame(
+            frame,
+            detections,
+            timestamp,
+            is_night,
+            time.perf_counter() - processing_started,
+        )
         return frame
+
+    def _publish_evaluation_frame(
+        self,
+        frame,
+        detections: list[dict],
+        source_time: float,
+        is_night: bool,
+        processing_seconds: float,
+    ) -> None:
+        if self._on_evaluation_frame is None:
+            return
+        height, width = frame.shape[:2]
+        observation = {
+            "frame_number": self.frame_number,
+            "source_time_seconds": source_time,
+            "processing_seconds": processing_seconds,
+            "lighting": "low-light" if is_night else "daylight",
+            "source_width": width,
+            "source_height": height,
+            "detections": [
+                {
+                    "class_name": detection["class_name"],
+                    "bbox": list(detection["bbox"]),
+                    "confidence": detection["conf"],
+                    "track_id": detection["track_id"],
+                    "source": detection.get("source", "full-frame"),
+                }
+                for detection in detections
+            ],
+            "detection_diagnostics": self._detector_diagnostics(),
+            "context_readiness": self.stats["context_readiness"],
+        }
+        try:
+            self._on_evaluation_frame(observation)
+        except Exception:
+            LOGGER.exception("Evaluation frame callback failed; primary analytics continue")
 
     def _detector_diagnostics(self) -> dict:
         snapshot = getattr(self.detector, "detection_diagnostics", None)

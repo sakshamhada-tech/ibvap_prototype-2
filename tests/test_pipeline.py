@@ -167,6 +167,36 @@ def test_pipeline_submits_raw_people_to_optional_face_worker(monkeypatch, tmp_pa
     assert video_pipeline.face_enhancer.closed
 
 
+def test_pipeline_publishes_metadata_only_evaluation_observations(monkeypatch, tmp_path):
+    configure_pipeline(monkeypatch, tmp_path)
+    observations = []
+    video_pipeline = pipeline.VideoPipeline(
+        on_evaluation_frame=observations.append,
+        show_overlays=False,
+    )
+
+    video_pipeline.process_frame(FakeFrame(), source_time=2.5)
+
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation["frame_number"] == 1
+    assert observation["source_time_seconds"] == 2.5
+    assert observation["processing_seconds"] > 0
+    assert observation["source_width"] == 100
+    assert observation["source_height"] == 100
+    assert observation["detections"] == [
+        {
+            "class_name": "person",
+            "bbox": [0, 0, 20, 20],
+            "confidence": 0.9,
+            "track_id": 1,
+            "source": "full-frame",
+        }
+    ]
+    assert observation["context_readiness"]["status"] == "ready"
+    video_pipeline.close()
+
+
 def test_pipeline_flags_person_box_contact_before_centroid_crosses(monkeypatch, tmp_path):
     configure_pipeline(monkeypatch, tmp_path)
     alerts = []

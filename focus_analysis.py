@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+from utils.evaluation import target_pixel_height_band
 
 LOGGER = logging.getLogger(__name__)
 
@@ -144,17 +145,6 @@ def expand_focus_bbox(
     left = max(0, min(frame_width - crop_width, round(center_x - crop_width / 2)))
     top = max(0, min(frame_height - crop_height, round(center_y - crop_height / 2)))
     return left, top, left + crop_width, top + crop_height
-
-
-def target_pixel_height_band(height_pixels: int) -> str:
-    """Return the redesign evaluation band for a source-coordinate target height."""
-    if height_pixels <= 24:
-        return "<=24 px"
-    if height_pixels <= 48:
-        return "25-48 px"
-    if height_pixels <= 96:
-        return "49-96 px"
-    return ">96 px"
 
 
 def focused_detection_from_result(
