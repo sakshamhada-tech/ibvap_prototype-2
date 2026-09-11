@@ -60,3 +60,27 @@ def test_desktop_dashboard_reserves_a_separate_alert_column():
     assert "minmax(280px, 0.9fr) minmax(280px, 0.9fr)" in stylesheet
     assert ".panel--log" in stylesheet
     assert "grid-column: 1 / -1" in stylesheet
+
+
+def test_visual_surfaces_use_astra_i_without_renaming_internal_configuration():
+    index = (ROOT / "dashboard/static/index.html").read_text(encoding="utf-8")
+    login = (ROOT / "dashboard/static/login.html").read_text(encoding="utf-8")
+    pipeline = (ROOT / "pipeline.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+    assert "<title>Astra I — Border Surveillance Console</title>" in index
+    assert '<span class="title-mark">Astra I</span>' in index
+    assert "<title>Sign in — Astra I</title>" in login
+    assert '<div class="login-mark">Astra I</div>' in login
+    assert 'f"Astra I | {mode_text}' in pipeline
+    assert 'cv2.imshow("Astra I - Border Surveillance"' in main
+    assert 'title="Astra I Dashboard"' in server
+
+    assert "<title>IBVAP" not in index
+    assert ">IBVAP<" not in index
+    assert "Sign in — IBVAP" not in login
+    assert ">IBVAP<" not in login
+    assert 'f"IBVAP | {mode_text}' not in pipeline
+    assert 'cv2.imshow("IBVAP - Border Surveillance"' not in main
+    assert 'title="IBVAP Dashboard"' not in server

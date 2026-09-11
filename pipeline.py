@@ -100,7 +100,7 @@ def draw_status_bar(frame, is_night: bool, active_alerts, frame_number: int, fps
     cv2.rectangle(frame, (0, 0), (width, 34), (30, 30, 30), -1)
     cv2.putText(
         frame,
-        f"IBVAP | {mode_text} | frame {frame_number} | {fps:.1f} fps",
+        f"Astra I | {mode_text} | frame {frame_number} | {fps:.1f} fps",
         (10, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.6,

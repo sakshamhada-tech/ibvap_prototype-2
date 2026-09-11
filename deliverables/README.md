@@ -1,4 +1,4 @@
-# IBVAP SIH presentation
+# Astra I SIH presentation
 
 - `IBVAP_SIH_Idea_Presentation_7_Pages.pdf` is the submission-ready, strict seven-page PDF.
 - `IBVAP_SIH_Idea_Presentation_Screenshot_Ready.pptx` is a 16:9 companion for inserting the two prototype screenshots on slide 4.

@@ -1,10 +1,14 @@
-# IBVAP Prototype
+# Astra I Prototype
 
-IBVAP is a single-camera intelligent video analytics prototype for existing
+Astra I is a single-camera intelligent video analytics prototype for existing
 CCTV feeds, webcams, local recordings, and RTSP/HTTP streams. It combines
 object detection and short-lived tracking with virtual-fence, loitering,
 low-light movement, optional face-review, and optional ANPR workflows. It can
 run as a local OpenCV process or as an authenticated FastAPI dashboard.
+
+> **Naming compatibility:** The displayed product name is **Astra I**. Existing
+> `IBVAP_*` environment variables, cookie names, thread names, file paths, and
+> Python identifiers remain unchanged to preserve configuration compatibility.
 
 > **Scope and safety:** This is an engineering prototype, not a certified
 > border-security product, biometric identification system, or forensic tool.
@@ -1084,7 +1088,7 @@ intentionally.
 ### `No module named 'cv2'`
 
 The import is named `cv2`, but the package is `opencv-python`. Confirm that the
-terminal running IBVAP uses the environment where the lock was installed:
+terminal running Astra I uses the environment where the lock was installed:
 
 ```bash
 which python
@@ -1465,7 +1469,7 @@ independent penetration test.
 
 ## Repository policy and licensing
 
-The original IBVAP project code is proprietary and all rights are reserved; see
+The original Astra I project code is proprietary and all rights are reserved; see
 [LICENSE](LICENSE). Third-party code, dependencies, and models retain their own
 terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 

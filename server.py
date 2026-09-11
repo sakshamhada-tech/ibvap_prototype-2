@@ -612,7 +612,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="IBVAP Dashboard",
+    title="Astra I Dashboard",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,

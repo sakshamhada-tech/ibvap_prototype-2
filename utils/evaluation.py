@@ -891,7 +891,7 @@ def render_markdown_report(report: dict) -> str:
         )
 
     lines = [
-        f"# IBVAP controlled evaluation — {text(report['source_id'])}",
+        f"# Astra I controlled evaluation — {text(report['source_id'])}",
         "",
         f"Generated (system local): `{text(report['generated_system_local'])}`  ",
         f"Build label: `{text(report['build_label'])}`  ",
