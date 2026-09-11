@@ -1,7 +1,7 @@
 # Controlled long-range evaluation
 
 This directory documents the reproducible, metadata-only evaluation workflow for the
-IBVAP Smart India Hackathon demo. It does **not** contain performance claims or
+Astra I Smart India Hackathon demo. It does **not** contain performance claims or
 representative border footage.
 
 ## What the harness measures

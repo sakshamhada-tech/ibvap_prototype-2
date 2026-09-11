@@ -125,7 +125,7 @@ def main() -> None:
             if writer is not None:
                 writer.write(annotated)
             if show_window:
-                cv2.imshow("IBVAP - Border Surveillance", annotated)
+                cv2.imshow("Astra I - Border Surveillance", annotated)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     LOGGER.info("q pressed; stopping")
                     break

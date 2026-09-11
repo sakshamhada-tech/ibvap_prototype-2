@@ -229,6 +229,8 @@ def test_event_windows_report_loiter_latency_and_group_negative_false_alert():
 
 def test_markdown_report_is_honest_and_contains_presentation_tables():
     markdown = render_markdown_report(compare())
+    assert markdown.startswith("# Astra I controlled evaluation")
+    assert "# IBVAP controlled evaluation" not in markdown
     assert "Controlled labelled-footage result only" in markdown
     assert "Authoritative tracked recall" in markdown
     assert "25-48 px" in markdown

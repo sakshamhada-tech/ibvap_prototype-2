@@ -1,4 +1,4 @@
-# IBVAP long-range redesign for a Smart India Hackathon demo
+# Astra I long-range redesign for a Smart India Hackathon demo
 
 **Date:** 10 September 2026  
 **Repository baseline:** `6332ed9`  
@@ -8,7 +8,7 @@
 
 The current `yolov8n.pt` full-frame detector should not be presented as a dependable long-range border detector. Its context rules receive no evidence when the full-frame detector fails to create a stable track, which is exactly what the low-resolution CAVIAR trial exposed.
 
-The proposed demo should instead present IBVAP as a **vendor-neutral attention and evidence layer** for existing day/night CCTV and PTZ feeds:
+The proposed demo should instead present Astra I as a **vendor-neutral attention and evidence layer** for existing day/night CCTV and PTZ feeds:
 
 1. ingest the camera's highest useful native-resolution stream;
 2. scan the wide view cheaply;
@@ -53,7 +53,7 @@ This is the useful form of "software zoom":
 - keep the crop labelled **DIGITAL FOCUS — SOURCE PIXELS ONLY**; and
 - compare wide-pass and focused-pass confidence transparently.
 
-The existing tiled inference is an early form of this technique. The SAHI paper reports that sliced inference can improve small-object average precision on its evaluated aerial datasets, while also making clear that tiny objects contain limited detail and slicing increases computation: <https://arxiv.org/abs/2202.06934>. Those reported gains must not be copied as an IBVAP performance claim; IBVAP needs its own footage and measurements.
+The existing tiled inference is an early form of this technique. The SAHI paper reports that sliced inference can improve small-object average precision on its evaluated aerial datasets, while also making clear that tiny objects contain limited detail and slicing increases computation: <https://arxiv.org/abs/2202.06934>. Those reported gains must not be copied as an Astra I performance claim; Astra I needs its own footage and measurements.
 
 If a PTZ camera supports optical zoom, software can later request real optical magnification through a vendor adapter or ONVIF. ONVIF defines absolute, relative, and continuous pan/tilt/zoom operations: <https://www.onvif.org/specs/2306/ONVIF-PTZ-Service-Spec-v2306.pdf>. The SIH demo can simulate focus with a crop, but must distinguish that from optical PTZ control.
 
@@ -256,7 +256,7 @@ Recommended target-height bands for reporting are dataset bins, not universal ca
 
 ### Safe claim
 
-> IBVAP is a vendor-neutral software attention layer aligned with publicly documented Indian CCTV/PTZ and CIBMS-style command architectures. It preserves native camera pixels through candidate-guided sliced and focused inference, confirms evidence over time, and provides explainable human-review alerts.
+> Astra I is a vendor-neutral software attention layer aligned with publicly documented Indian CCTV/PTZ and CIBMS-style command architectures. It preserves native camera pixels through candidate-guided sliced and focused inference, confirms evidence over time, and provides explainable human-review alerts.
 
 ### Do not claim
 
