@@ -1,10 +1,11 @@
-"""Optional native-resolution focus analysis for small, untracked candidates.
+"""Optional native-resolution focus analysis for source-frame candidates.
 
 This module deliberately does not create persistent identities. It re-runs the existing
 reviewed object model on padded crops copied from the untouched source frame, confirms
 candidate episodes over time, and reports evidence to the authoritative full-frame
-tracker. Browser enlargement of the returned JPEG is presentation only; no pixels are
-synthesized here.
+tracker. Candidates prefer untracked proposals but may be non-mutating copies of boxes
+already acquired by ByteTrack. Browser enlargement of the returned JPEG is presentation
+only; no pixels are synthesized here.
 """
 
 from __future__ import annotations
@@ -179,6 +180,7 @@ def focused_detection_from_result(
                 "bbox": source_bbox,
                 "proposal_iou": proposal_iou,
                 "source_candidate": candidate.get("source", "unknown"),
+                "source_authoritative_track_id": candidate.get("source_authoritative_track_id"),
                 "track_id": None,
             }
         )

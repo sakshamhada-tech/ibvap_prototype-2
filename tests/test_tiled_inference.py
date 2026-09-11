@@ -231,6 +231,75 @@ def test_live_tiling_submits_background_job_without_merging_green_boxes(monkeypa
     assert detector.detection_diagnostics()["tiled_inference"]["last_proposals"] == 3
 
 
+def test_native_focus_falls_back_to_authoritative_detections_without_mutating_them():
+    tracked = {
+        "track_id": 7,
+        "class_id": 0,
+        "class_name": "person",
+        "conf": 0.9,
+        "bbox": (1, 2, 11, 22),
+        "source": "full-frame",
+    }
+
+    candidates = Detector._focus_candidates([tracked])
+
+    assert tracked["track_id"] == 7
+    assert candidates == [
+        {
+            **tracked,
+            "track_id": None,
+            "source_authoritative_track_id": 7,
+        }
+    ]
+
+
+def test_native_focus_prefers_untracked_proposals_over_tracked_fallbacks():
+    tracked = {"track_id": 7, "source": "full-frame"}
+    untracked = {"track_id": None, "source": "tile"}
+
+    assert Detector._focus_candidates([tracked, untracked]) == [untracked]
+
+
+def test_track_frame_submits_tracked_fallback_when_no_untracked_candidate(monkeypatch):
+    boxes = SimpleNamespace(
+        xyxy=Values(((1, 2, 11, 22),)),
+        cls=Values((0,)),
+        conf=Values((0.9,)),
+        id=Values((7,)),
+    )
+
+    class TrackingModel:
+        def track(self, _frame, **_kwargs):
+            return [SimpleNamespace(boxes=boxes)]
+
+    class FocusService:
+        def __init__(self):
+            self.submissions = []
+
+        def submit(self, frame, candidates, frame_number):
+            self.submissions.append((frame, candidates, frame_number))
+            return True
+
+    detector = Detector.__new__(Detector)
+    detector.model = TrackingModel()
+    detector.tile_model = None
+    detector.tile_worker = None
+    detector.focus_service = FocusService()
+    detector._frame_number = 0
+    detector._focus_boost_remaining = 0
+    detector._focus_snapshot = {"status": "ready", "focus": None}
+    monkeypatch.setattr(config, "NATIVE_FOCUS_INTERVAL_FRAMES", 1)
+    frame = Frame()
+
+    detections = detector.track_frame(frame)
+
+    _submitted_frame, candidates, frame_number = detector.focus_service.submissions[0]
+    assert frame_number == 1
+    assert candidates[0]["track_id"] is None
+    assert candidates[0]["source_authoritative_track_id"] == 7
+    assert detections[0]["track_id"] == 7
+
+
 def test_background_tile_results_feed_focus_without_entering_primary_detections():
     class FocusService:
         def __init__(self):
@@ -248,6 +317,40 @@ def test_background_tile_results_feed_focus_without_entering_primary_detections(
     detector._handle_tiled_result(frame, candidates, 12)
 
     assert detector.focus_service.submissions == [(frame, candidates, 12)]
+
+
+def test_confirmed_tracked_fallback_reuses_authoritative_id_without_boosting():
+    snapshots = []
+    detector = Detector.__new__(Detector)
+    detector._frame_number = 20
+    detector._focus_lock = None
+    detector._focus_boost_remaining = 0
+    detector._acquired_focus_episodes = {}
+    detector._on_focus_snapshot = snapshots.append
+    detector._focus_snapshot = {"status": "ready", "focus": None}
+
+    detector._handle_focus_snapshot(
+        {
+            "status": "ready",
+            "frame_number": 19,
+            "focus": {
+                "candidate_episode_id": 3,
+                "class_id": 0,
+                "source_authoritative_track_id": 7,
+                "confirmed": True,
+                "newly_confirmed": True,
+                "acquisition_state": "tracker_requested",
+            },
+        }
+    )
+
+    focus = detector.focus_snapshot()["focus"]
+    assert focus["acquisition_state"] == "tracker_acquired"
+    assert focus["authoritative_track_id"] == 7
+    assert focus.get("track_id") is None
+    assert detector._focus_boost_remaining == 0
+    assert detector._acquired_focus_episodes == {3: 20}
+    assert snapshots[-1]["focus"]["authoritative_track_id"] == 7
 
 
 def test_confirmed_focus_requests_bounded_tracker_boost_and_only_tracker_assigns_id():

@@ -150,12 +150,14 @@ positives, and has no real-time guarantee. It defaults off.
 
 ### Native source-pixel focus and tracker acquisition
 
-The optional native-focus bridge accepts untracked full-frame or tile proposals
-on a configurable cadence. A failure-isolated worker keeps at most one pending
-job, copies the untouched source frame, pads each selected proposal in source
-coordinates, and re-runs the same checksum-verified COCO model on that crop.
-Repeated overlapping observations form a short-lived **candidate episode**, not
-an object identity or persistent track ID.
+The optional native-focus bridge prefers untracked full-frame or tile proposals
+on a configurable cadence. When ByteTrack has already acquired every full-frame
+detection, it falls back to copies of those authoritative boxes so the source-focus
+pane does not go permanently idle; the original detections and IDs are not mutated.
+A failure-isolated worker keeps at most one pending job, copies the untouched source
+frame, pads each selected proposal in source coordinates, and re-runs the same
+checksum-verified COCO model on that crop. Repeated overlapping observations form a
+short-lived **candidate episode**, not a new identity or persistent track ID.
 
 After temporal confirmation, the worker requests a bounded run of larger-input
 full-frame inference. The normal, explicitly configured ByteTrack instance must

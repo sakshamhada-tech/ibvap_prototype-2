@@ -89,6 +89,7 @@ def test_focus_result_remaps_crop_detection_to_source_coordinates():
         "class_id": 0,
         "class_name": "person",
         "source": "tile",
+        "source_authoritative_track_id": 17,
         "bbox": (100, 200, 120, 230),
     }
 
@@ -96,6 +97,7 @@ def test_focus_result_remaps_crop_detection_to_source_coordinates():
 
     assert detection["bbox"] == (105, 206, 115, 226)
     assert detection["source_candidate"] == "tile"
+    assert detection["source_authoritative_track_id"] == 17
     assert detection["track_id"] is None
     assert focused_detection_from_result(result, (300, 300, 500, 500), candidate, 0.05) is None
 

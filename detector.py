@@ -400,9 +400,29 @@ class Detector:
             focus_service is not None
             and self._frame_number % config.NATIVE_FOCUS_INTERVAL_FRAMES == 0
         ):
-            candidates = [detection for detection in detections if detection["track_id"] is None]
-            focus_service.submit(frame, candidates, self._frame_number)
+            focus_service.submit(
+                frame,
+                self._focus_candidates(detections),
+                self._frame_number,
+            )
         return detections
+
+    @staticmethod
+    def _focus_candidates(detections: list[dict]) -> list[dict]:
+        """Prefer proposals, but keep focus useful after ByteTrack acquires everything."""
+        untracked = [dict(detection) for detection in detections if detection["track_id"] is None]
+        if untracked:
+            return untracked
+
+        fallback = []
+        for detection in detections:
+            if detection.get("source") != "full-frame" or detection.get("track_id") is None:
+                continue
+            candidate = dict(detection)
+            candidate["source_authoritative_track_id"] = detection["track_id"]
+            candidate["track_id"] = None
+            fallback.append(candidate)
+        return fallback
 
     def _update_tiled_snapshot(self, **values: Any) -> None:
         snapshot = getattr(self, "_tiled_snapshot", None)
@@ -608,10 +628,23 @@ class Detector:
             payload["focus"] = focus
             if focus:
                 episode_id = focus.get("candidate_episode_id")
+                result_age = self._frame_number - int(payload.get("frame_number") or 0)
+                source_track_id = focus.get("source_authoritative_track_id")
                 if episode_id in getattr(self, "_acquired_focus_episodes", {}):
                     focus["acquisition_state"] = "tracker_acquired"
-                result_age = self._frame_number - int(payload.get("frame_number") or 0)
-                if focus.get("newly_confirmed"):
+                elif (
+                    focus.get("confirmed")
+                    and isinstance(episode_id, int)
+                    and isinstance(source_track_id, int)
+                    and result_age <= config.NATIVE_FOCUS_RESULT_MAX_AGE_FRAMES
+                ):
+                    # The candidate was a non-mutating copy of an authoritative
+                    # full-frame track, so no larger-input acquisition run is needed.
+                    self._acquired_focus_episodes[episode_id] = self._frame_number
+                    focus["acquisition_state"] = "tracker_acquired"
+                    focus["authoritative_track_id"] = source_track_id
+                    self._focus_boost_remaining = 0
+                elif focus.get("newly_confirmed"):
                     if result_age <= config.NATIVE_FOCUS_RESULT_MAX_AGE_FRAMES:
                         self._focus_boost_remaining = max(
                             getattr(self, "_focus_boost_remaining", 0),
