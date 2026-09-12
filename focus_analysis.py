@@ -210,7 +210,9 @@ class NativeFocusService:
         )
         self._snapshot: dict[str, Any] = {
             "status": "disabled" if not self.enabled else "starting",
-            "message": None,
+            "message": (
+                "disabled by IBVAP_ENABLE_NATIVE_FOCUS=false" if not self.enabled else None
+            ),
             "frame_number": None,
             "updated_monotonic": None,
             "submitted": 0,

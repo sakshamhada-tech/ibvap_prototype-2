@@ -16,7 +16,7 @@ def test_feature_defaults_are_conservative_and_alarm_is_severity_scoped():
     assert config.ENABLE_GROUP_APPROACH is False
     assert config.ENABLE_MOTION_SIGNATURE is False
     assert config.ENABLE_TILED_INFERENCE is False
-    assert config.ENABLE_NATIVE_FOCUS is False
+    assert config.ENABLE_NATIVE_FOCUS is True
     assert config.NATIVE_FOCUS_DEVICE == "cpu"
     assert config.YOLO_TRACKER == "bytetrack.yaml"
     assert config.YOLO_DEVICE == "cpu"

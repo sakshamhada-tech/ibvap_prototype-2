@@ -28,7 +28,7 @@ run as a local OpenCV process or as an authenticated FastAPI dashboard.
 | Group approach | Proximity clusters plus correlated movement toward one fence segment | Optional, disabled |
 | Motion signature | Heuristic centroid-oscillation score for composite risk only | Experimental, disabled |
 | Tiled small-object inference | Cadence-limited overlapping tiles plus cross-tile NMS | Optional, disabled |
-| Native digital focus | Source-pixel crop confirmation plus bounded tracker-acquisition boost | Experimental, disabled |
+| Native digital focus | Source-pixel crop confirmation plus bounded tracker-acquisition boost | Experimental, enabled on CPU |
 | Controlled evaluation | Identical-frame wide/focus traces, pixel-band metrics, tracking/events/runtime report | Offline tool |
 | Low-posture review | Failure-isolated pose worker with size and persistence gates | Experimental, disabled |
 | Firearm review | No detector, alert, dashboard, or alarm path | Not implemented |
@@ -167,10 +167,12 @@ PIXELS ONLY**, including original target dimensions, confidence, confirmation
 progress, provenance, and acquisition state. No super-resolution or generative
 enhancement is used. Browser enlargement does not create sensor detail.
 
-The feature is disabled by default because it owns a second model instance and
-can materially reduce throughput. A one-slot drop-on-busy queue, CPU/MPS/CUDA
-device selection, visible worker status, model checksum verification, and
-exception isolation keep it from blocking or stopping wide tracking.
+The feature is enabled for the demo on the stable CPU device. It owns a second
+model instance and can materially reduce throughput, so operators may explicitly
+set `IBVAP_ENABLE_NATIVE_FOCUS=false` for a wide-only/performance profile. A
+one-slot drop-on-busy queue, CPU/MPS/CUDA device selection, visible worker status,
+model checksum verification, and exception isolation keep it from blocking or
+stopping wide tracking.
 
 ### Controlled baseline-versus-focus evaluation
 
@@ -495,7 +497,7 @@ drawn. Face processing does not alter the primary annotated frame.
 | Generative face preview | Vendored minimal GFPGAN clean inference architecture | Experimental; disabled by default |
 | ANPR | External regional YOLO checkpoint + OpenCV preprocessing + EasyOCR + tracked consensus | Disabled by default; separate dependency lock and weights |
 | Tiled detection | Bounded Ultralytics worker over rotating overlapping tiles | Disabled; drop-on-busy in live mode, frame-aligned in evaluation |
-| Native digital focus | Reviewed object model on source crops in a one-slot worker | Disabled; source evidence only, no synthetic track IDs |
+| Native digital focus | Reviewed object model on source crops in a one-slot worker | Enabled on CPU; source evidence only, no synthetic track IDs |
 | Controlled evaluation | JSON annotations/traces plus deterministic Python scoring | No extra model or dependency |
 | Posture review | Operator-supplied Ultralytics pose checkpoint in a bounded worker | Disabled; uses core runtime plus external weights |
 | Context signals | Classical centroid geometry plus transparent weighted scoring | Disabled; unvalidated scene heuristics |
@@ -732,7 +734,7 @@ parameters rather than validated universal values.
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `IBVAP_ENABLE_NATIVE_FOCUS` | `false` | Enable the isolated source-crop confirmation bridge |
+| `IBVAP_ENABLE_NATIVE_FOCUS` | `true` | Enable the isolated source-crop confirmation bridge |
 | `IBVAP_NATIVE_FOCUS_INTERVAL_FRAMES` | `5` | Candidate submission cadence |
 | `IBVAP_NATIVE_FOCUS_MODEL_INPUT_SIZE` | `640` | ROI model input side, divisible by 32 |
 | `IBVAP_NATIVE_FOCUS_TRACK_INPUT_SIZE` | `1280` | Temporary authoritative full-frame input side |

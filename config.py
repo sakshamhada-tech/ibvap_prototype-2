@@ -163,8 +163,8 @@ if TILED_INFERENCE_SHUTDOWN_TIMEOUT_SECONDS > 120.0:
     raise ValueError("IBVAP_TILED_INFERENCE_SHUTDOWN_TIMEOUT_SECONDS must be <= 120")
 
 # Native focus reuses the reviewed object model on untouched source-frame crops.
-# It is opt-in because it owns a separate model instance and adds inference cost.
-ENABLE_NATIVE_FOCUS = _env_bool("IBVAP_ENABLE_NATIVE_FOCUS", False)
+# The demo enables its bounded CPU worker by default; operators can explicitly disable it.
+ENABLE_NATIVE_FOCUS = _env_bool("IBVAP_ENABLE_NATIVE_FOCUS", True)
 NATIVE_FOCUS_INTERVAL_FRAMES = _env_int("IBVAP_NATIVE_FOCUS_INTERVAL_FRAMES", 5, minimum=1)
 if NATIVE_FOCUS_INTERVAL_FRAMES > 10_000:
     raise ValueError("IBVAP_NATIVE_FOCUS_INTERVAL_FRAMES must be <= 10000")

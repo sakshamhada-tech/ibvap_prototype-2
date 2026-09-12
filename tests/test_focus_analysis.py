@@ -142,6 +142,15 @@ def test_native_focus_auto_device_does_not_implicitly_use_mps(monkeypatch):
     assert NativeFocusService._select_device("mps") == "mps"
 
 
+def test_explicitly_disabled_native_focus_reports_the_override(monkeypatch):
+    monkeypatch.setattr(config, "ENABLE_NATIVE_FOCUS", False)
+
+    service = NativeFocusService()
+
+    assert service.snapshot()["status"] == "disabled"
+    assert service.snapshot()["message"] == "disabled by IBVAP_ENABLE_NATIVE_FOCUS=false"
+
+
 def test_native_focus_initialization_failure_is_status_only(monkeypatch):
     monkeypatch.setattr(config, "ENABLE_NATIVE_FOCUS", True)
     snapshots = []

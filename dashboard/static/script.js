@@ -162,7 +162,7 @@ function renderFocus(snapshot) {
     const empty = document.createElement("p");
     empty.className = "focus-empty";
     if (snapshot.status === "disabled") {
-      empty.textContent = "Native focus is disabled by default.";
+      empty.textContent = "Native focus is disabled by configuration.";
     } else if (snapshot.status === "starting") {
       empty.textContent = "Loading the isolated focus worker…";
     } else if (snapshot.status === "unavailable" || snapshot.status === "degraded") {
