@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — Astra I</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body class="login-page">
+  <main class="login-panel">
+    <div class="login-mark">Astra I</div>
+    <h1>Operator sign in</h1>
+    <p class="muted">Authenticate to access the surveillance feed and alerts.</p>
+    <p id="login-error" class="login-error" role="alert" hidden></p>
+    <form action="/login" method="post" class="login-form">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required autofocus maxlength="128">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="512">
+      <button type="submit" class="primary-button">Sign in</button>
+    </form>
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+
+</html>

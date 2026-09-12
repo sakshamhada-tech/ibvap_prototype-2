@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install development tools
+        run: python -m pip install -r requirements-dev.lock
+      - name: Formatting
+        run: python -m ruff format --check .
+      - name: Lint
+        run: python -m ruff check .
+      - name: Unit tests
+        run: python -m pytest --cov --cov-report=term-missing
+      - name: Static security scan
+        run: make security
+      - name: Dependency vulnerability audit
+        run: make audit
+      - name: Resolve universal lock for Apple Silicon macOS 14
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+        run: |
+          uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements.lock
+          uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements-anpr.lock
+          uv pip install --system --dry-run --python-platform aarch64-apple-darwin --python-version 3.11 -r requirements-face.lock
+
+  macos-opencv:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install pinned OpenCV package
+        run: |
+          OPENCV_SPEC="$(grep -E '^opencv-python==' requirements.lock | head -1)"
+          test -n "$OPENCV_SPEC"
+          python -m pip install "$OPENCV_SPEC"
+      - name: Verify cv2 import
+        run: python -c "import cv2, sys; print(sys.executable, cv2.__version__)"

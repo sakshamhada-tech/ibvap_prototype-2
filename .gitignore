@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data and generated media
+logs/*
+output/*
+sample_data/*
+!logs/.gitkeep
+!output/.gitkeep
+!sample_data/.gitkeep
+evaluation/results/*
+
+# Optional face models are large and have separate upstream licenses.
+models/*.onnx
+models/*.onnx.sha256
+models/GFPGAN*.pth
+# Optional ANPR weights stay external; source/checksum metadata remains tracked.
+models/indian_plate_yolov8n.pt
+models/yolov8n-pose.pt
+models/*.part
+models/ibvap-model-*
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

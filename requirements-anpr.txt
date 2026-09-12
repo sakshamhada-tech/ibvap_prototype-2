@@ -1,0 +1,4 @@
+-r requirements.txt
+# Keep EasyOCR's headless OpenCV dependency on the same supported major.
+opencv-python-headless>=4.9.0,<5.0.0
+easyocr>=1.7.1,<2.0.0

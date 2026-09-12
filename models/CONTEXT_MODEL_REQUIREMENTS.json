@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "models": {
+    "posture": {
+      "configured_path": "models/yolov8n-pose.pt",
+      "source": null,
+      "sha256": null,
+      "status": "operator-supplied-unapproved",
+      "requirements": [
+        "Ultralytics-compatible pose checkpoint",
+        "Explicit IBVAP_POSTURE_MODEL_SHA256",
+        "Independent licence, provenance, bias, and accuracy review"
+      ]
+    }
+  },
+  "policy": "No model is downloaded silently. A missing or unverified optional model leaves its worker unavailable while primary analytics continue."
+}

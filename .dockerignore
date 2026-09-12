@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+.env
+logs/*
+output/*
+sample_data/*
+models/*.onnx
+models/*.pth
+models/*.pt
+models/*.part
+.pytest_cache
+.ruff_cache
